@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="devmcu/devmcu.csproj" />
+  <Project Path="import/import.csproj" />
+  <Project Path="NETMCU/NETMCUCore.csproj" />
+  <Project Path="NETMCUCompiler/NETMCUCompiler.csproj" />
+</Solution>

@@ -1,0 +1,16 @@
+{
+	"Name": "STM32 Core for NETMCU",
+	"State": "Develop",
+	"PublishDate": "2026-02-02T00:48:00",
+	"Parameters":{
+		"ProcessingPathes": [
+			"linker.ld"
+		],
+		"RequiredValues": [
+		],
+		"DefaultValues": {
+			"FLASH_SIZE": "262144",
+			"RAM_SIZE": "65536"
+		}
+	}
+}

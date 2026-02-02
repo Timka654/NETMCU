@@ -1,0 +1,17 @@
+<Project>
+  <PropertyGroup>
+    <NoCompilerStandardLib>true</NoCompilerStandardLib>
+    <NoStdLib>true</NoStdLib>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Deterministic>true</Deterministic>
+    
+    <UseAppHost>false</UseAppHost>
+    <CopyBuildOutputToPublishDirectory>false</CopyBuildOutputToPublishDirectory>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)\NETMCU\NETMCUCore.csproj" />
+  </ItemGroup>
+</Project>

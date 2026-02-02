@@ -1,0 +1,4 @@
+FROM ubuntu:22.04 AS base-mcu
+RUN apt-get update && apt-get install -y \
+    build-essential cmake git python3 wget
+WORKDIR /project

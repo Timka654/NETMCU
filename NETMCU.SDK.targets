@@ -1,0 +1,9 @@
+<Project>
+  <Target Name="InvokeNETMCUCompiler" AfterTargets="CoreCompile">
+    <Message Importance="high" Text="Starting NETMCU Compilation for $(AssemblyName)..." />
+    
+    </Target>
+
+  <Target Name="GenerateBuildDependencyFile" />
+  <Target Name="GenerateBuildRuntimeConfigurationFiles" />
+</Project>
