@@ -7,6 +7,12 @@ namespace devmcu
     {
         public override void Apply(CompilerOptions options)
         {
+            //options.AddInputConfiguration("Test", "string", "dv", true, ["q1", "q2", "q3"], 
+            //    errors: [
+            //        new InputConfigurationErrorMessage(InputConfigurationErrorMessage.InvalidValue, "test_invalid_value"), 
+            //        new InputConfigurationErrorMessage(InputConfigurationErrorMessage.InvalidType, "test_invalid_type"),
+            //        new InputConfigurationErrorMessage(InputConfigurationErrorMessage.RequiredValue, "test_required_value")]);
+
             options.SetMCUType("STM32");
             options.SetMCU("cortex-m4");
             options.SetMemoryLayout(1024 * 256, 1024 * 64); // 256KB Flash, 64KB RAM
@@ -19,6 +25,7 @@ namespace devmcu
             options.Include("Drivers/STM32F4xx_HAL_Driver/Inc");
             options.AddLibrary("Drivers/STM32F4xx_HAL_Driver/Src");
             options.InstallPackage("CMSIS");
+
 
             #region Test
 

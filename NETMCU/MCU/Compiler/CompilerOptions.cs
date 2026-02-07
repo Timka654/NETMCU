@@ -5,7 +5,6 @@ namespace System.MCU.Compiler
 {
     public class CompilerOptions
     {
-
         [ReplaceConfigurationValue(NameArg = nameof(name), ValueArg = nameof(value))]
         public void SetConfiguration(string name, string value) { }
 
@@ -20,6 +19,17 @@ namespace System.MCU.Compiler
 
         [LibraryConfigurationValue(PathArg = nameof(path))]
         public void AddLibrary(string path) { }
+
+
+        [InputConfigurationValue(NameArg = nameof(name)
+                               , TypeArg = nameof(type)
+                               , DefaultValueArg = nameof(defaultValue)
+                               , RequiredArg = nameof(required)
+                               , ValidValuesArg = nameof(validValues)
+                               , ErrorsArg = nameof(errors))]
+        public void AddInputConfiguration(string name, string type="string", string? defaultValue = null, bool required = true, string[]? validValues = null, params InputConfigurationErrorMessage[] errors) { }
+
+        
 
         // Определение макросов (аналог -D в gcc)
         // Например: options.Define("USE_HAL_DRIVER");

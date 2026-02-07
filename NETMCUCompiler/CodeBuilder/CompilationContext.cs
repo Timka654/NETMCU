@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System.Text;
 
 namespace NETMCUCompiler.CodeBuilder
 {
@@ -43,5 +44,54 @@ namespace NETMCUCompiler.CodeBuilder
             if (RegisterMap.TryGetValue(name, out int reg)) return reg;
             throw new Exception($"Переменная {name} не объявлена");
         }
+
+        public Dictionary<string, int> ExportMap { get; } = new();
+
+        public Dictionary<string, List<int>> NativeRelocations { get; } = new();
+
+        public void AddRelocation(string name)
+        {
+            if (!NativeRelocations.ContainsKey(name))
+                NativeRelocations[name] = new List<int>();
+
+            // Запоминаем текущую позицию в бинарном потоке
+            NativeRelocations[name].Add((int)Bin.Position);
+        }
+
+        public TypeManager TypeManager { get; } = new();
+    }
+
+
+
+    public class TypeMetadata
+    {
+        public string Name { get; set; }
+        public int TotalSize { get; set; }
+        public Dictionary<string, int> FieldOffsets { get; } = new();
+        public bool IsClass { get; set; } // true - куча, false - стек (struct)
+    }
+
+    public class TypeManager
+    {
+        private readonly Dictionary<string, TypeMetadata> _types = new();
+
+        public void RegisterType(ClassDeclarationSyntax node)
+        {
+            var meta = new TypeMetadata { Name = node.Identifier.Text, IsClass = true };
+            int currentOffset = 0;
+
+            foreach (var member in node.Members.OfType<FieldDeclarationSyntax>())
+            {
+                foreach (var variable in member.Declaration.Variables)
+                {
+                    meta.FieldOffsets[variable.Identifier.Text] = currentOffset;
+                    currentOffset += 4; // Пока считаем всё по 4 байта (int, uint, ptr)
+                }
+            }
+            meta.TotalSize = currentOffset;
+            _types[meta.Name] = meta;
+        }
+
+        public TypeMetadata GetType(string name) => _types.TryGetValue(name, out var m) ? m : null;
     }
 }

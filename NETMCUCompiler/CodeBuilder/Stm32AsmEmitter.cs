@@ -1,13 +1,17 @@
 ﻿using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using NETMCUCompiler.CodeBuilder.Dev;
 using System;
 
 namespace NETMCUCompiler.CodeBuilder
 {
-    public class Stm32MethodBuilder : CSharpSyntaxWalker
+    public class Stm32MethodBuilder(CompilationContext context) : CSharpSyntaxWalker
     {
-        CompilationContext context = new();
+        public Stm32MethodBuilder() : this(new CompilationContext())
+        {
+                
+        }
 
         public (string code, byte[] logic) BuildAsm(MethodDeclarationSyntax tree)
         {
@@ -164,6 +168,21 @@ namespace NETMCUCompiler.CodeBuilder
 
             context.Asm.AppendLine($"{endLabel}:");
         }
+        //public override void VisitObjectCreationExpression(ObjectCreationExpressionSyntax node)
+        //{
+        //    var typeName = node.Type.ToString();
+        //    var meta = _typeManager.GetType(typeName);
+
+        //    // 1. Подготовка размера для Alloc (в r0)
+        //    ASMInstructions.EmitMovImmediate(0, meta.TotalSize, context);
+
+        //    // 2. Вызов нативного аллокатора
+        //    ASMInstructions.EmitCall("NETMCU__Memory__Alloc", context);
+
+        //    // 3. Результат (указатель) теперь в r0. Переносим в целевой регистр переменной.
+        //    int targetReg = context.NextFreeRegister++;
+        //    ASMInstructions.EmitMovRegister(targetReg, 0, context);
+        //}
 
         private void ProcessCondition(ExpressionSyntax condition, string failedLabel)
         {
@@ -237,5 +256,46 @@ namespace NETMCUCompiler.CodeBuilder
             base.VisitInvocationExpression(node);
         }
 
+    }
+    public class LibraryCompiler
+    {
+        public static void CompileProject(SyntaxTree tree, CompilationContext context)
+        {
+            var root = tree.GetRoot();
+
+            // 1. Собираем типы
+            var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
+            foreach (var @class in classes)
+            {
+                context.TypeManager.RegisterType(@class);
+            }
+
+            // 2. Компилируем методы
+            foreach (var @class in classes)
+            {
+                foreach (var method in @class.Members.OfType<MethodDeclarationSyntax>())
+                {
+                    CompileMethod(@class, method, context);
+                }
+            }
+        }
+
+        private static void CompileMethod(ClassDeclarationSyntax cls, MethodDeclarationSyntax method, CompilationContext ctx)
+        {
+            string fullName = $"{cls.Identifier.Text}_{method.Identifier.Text}";
+
+            // Регистрируем точку входа в ExportMap
+            ctx.ExportMap[fullName] = (int)ctx.Bin.Position;
+
+            // Настраиваем фрейм (с учетом 'this' если метод не static)
+            bool isStatic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
+            ASMInstructions.EmitMethodPrologue(!isStatic, ctx);
+
+            // Пользуемся нашим старым добрым билдером для внутренностей
+            var builder = new Stm32MethodBuilder(ctx);
+            builder.Visit(method.Body);
+
+            ASMInstructions.EmitMethodEpilogue(ctx);
+        }
     }
 }

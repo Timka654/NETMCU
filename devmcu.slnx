@@ -1,6 +1,7 @@
 <Solution>
+  <Project Path="devlib/devlib.csproj" Id="84569803-7bda-402b-aeb8-c9a8fab2421e" />
   <Project Path="devmcu/devmcu.csproj" />
-  <Project Path="import/import.csproj" />
   <Project Path="NETMCU/NETMCUCore.csproj" />
   <Project Path="NETMCUCompiler/NETMCUCompiler.csproj" />
+  <Project Path="NETMCUCore.STM/NETMCUCore.STM.csproj" Id="e247b935-d4c3-4b93-b0f6-95524a30edcc" />
 </Solution>

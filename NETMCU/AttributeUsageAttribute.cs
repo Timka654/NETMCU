@@ -57,4 +57,7 @@ namespace System
             set { m_inherited = value; }
         }
     }
+    public class ParamArrayAttribute : Attribute
+    {
+    }
 }

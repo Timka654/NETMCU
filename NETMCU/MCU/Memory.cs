@@ -19,4 +19,10 @@ namespace System.MCU
         [NativeCall("NETMCU__Memory__Free")]
         public static extern void Free(int ptr);
     }
+
+    public static class Debugger
+    {
+        [NativeCall("NETMCU__Debugger__Break")]
+        public static extern void Break();
+    }
 }

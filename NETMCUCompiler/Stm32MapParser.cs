@@ -1,4 +1,5 @@
-﻿using System.Globalization;
+﻿using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace NETMCUCompiler

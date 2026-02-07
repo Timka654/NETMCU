@@ -22,7 +22,7 @@ namespace NETMCUCompiler
             if (!MSBuildLocator.IsRegistered)
                 MSBuildLocator.RegisterDefaults();
 
-            BuildingContext bc = new BuildingContext(projectPath);
+            BuildingContext bc = new BuildingContext(projectPath, BuildingOutputType.Executable);
 
             await bc.LoadAsync();
 

@@ -5,14 +5,23 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
 using NETMCUCompiler.CodeBuilder;
+using Newtonsoft.Json.Linq;
+using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Runtime.Intrinsics.X86;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace NETMCUCompiler
 {
-    internal class BuildingContext(string path)
+    public enum BuildingOutputType
+    {
+        Executable,
+        Library
+    }
+
+    internal class BuildingContext(string path, BuildingOutputType type)
     {
         public string Path { get; private set; } = path;
 
@@ -28,6 +37,12 @@ namespace NETMCUCompiler
         public INamedTypeSymbol? ProgramMainType { get; private set; }
         public IMethodSymbol? ProgramMainMethod { get; private set; }
         public MethodDeclarationSyntax? ProgramMainNode { get; private set; }
+
+
+
+        public Dictionary<string, int> ExportMap { get; } = new();
+
+        public Dictionary<string, List<int>> NativeRelocations { get; } = new();
 
         public async Task LoadAsync()
         {
@@ -50,14 +65,27 @@ namespace NETMCUCompiler
             }
 
             await TryLoad();
+
+            await Load2();
+
+            foreach (var reference in referenceContexts)
+            {
+                await reference.Value.LoadAsync();
+            }
         }
 
-        public async Task<bool> BuildCore()
+        CommonFileModel? commonData;
+
+        bool needsRebuild;
+
+        string mcuObjCorePath, mcuCorePath, tempDockerfilePath, dockerContent, commonCorePath, commonOldPath, buildDir;
+
+        private async Task<bool> Load2()
         {
             var bc = this;
             var bo = Options;
 
-            if (!bo.replaceable.TryGetValue("CORE_PATH", out var corePath))
+            if (!bo.Configurations.TryGetValue("CORE_PATH", out var corePath))
                 throw new Exception("CORE_PATH is not defined in building options.");
 
             if (Directory.Exists(corePath))
@@ -69,7 +97,7 @@ namespace NETMCUCompiler
                 throw new Exception($"Core path does not exist: {corePath}");
 #endif
 
-            var mcuCorePath = System.IO.Path.Combine(corePath, "mcu");
+            mcuCorePath = System.IO.Path.Combine(corePath, "mcu");
 
             StringBuilder dockerContentBuilder = new StringBuilder();
 
@@ -78,7 +106,7 @@ namespace NETMCUCompiler
             if (File.Exists(dockerFilePath))
                 dockerContentBuilder.AppendLine(File.ReadAllText(dockerFilePath));
 
-            if (bo.replaceable.TryGetValue("MCU_TYPE", out var mcu_type))
+            if (bo.Configurations.TryGetValue("MCU_TYPE", out var mcu_type))
             {
                 mcuCorePath = System.IO.Path.Combine(mcuCorePath, mcu_type);
 
@@ -92,10 +120,10 @@ namespace NETMCUCompiler
             else
                 throw new Exception("MCU_TYPE is not defined in building options.");
 
-            if (!bo.replaceable.TryAdd("CFLAGS", string.Empty))
-                bo.replaceable["CFLAGS"] = bo.replaceable["CFLAGS"].Trim();
+            if (!bo.Configurations.TryAdd("CFLAGS", string.Empty))
+                bo.Configurations["CFLAGS"] = bo.Configurations["CFLAGS"].Trim();
 
-            bo.replaceable["CFLAGS_DEFINES"] = string.Join(" ", bo.defines.Select(d =>
+            bo.Configurations["CFLAGS_DEFINES"] = string.Join(" ", bo.Defines.Select(d =>
             {
                 var f = d.Key;
                 if (!string.IsNullOrWhiteSpace(d.Value))
@@ -103,48 +131,48 @@ namespace NETMCUCompiler
                 return $"-D{f}";
             }));
 
-            bo.replaceable["CFLAGS"] = $"{bo.replaceable["CFLAGS"].Trim()} {bo.replaceable["CFLAGS_DEFINES"]}";
+            bo.Configurations["CFLAGS"] = $"{bo.Configurations["CFLAGS"].Trim()} {bo.Configurations["CFLAGS_DEFINES"]}";
 
-            bo.replaceable["CFLAGS_INCLUDES"] = string.Join(" ", bo.include.Select(inc => $"-I/project/{inc}"));
+            bo.Configurations["CFLAGS_INCLUDES"] = string.Join(" ", bo.Include.Select(inc => $"-I/project/{inc}"));
 
-            bo.replaceable["CFLAGS"] = $"{bo.replaceable["CFLAGS"].Trim()} {bo.replaceable["CFLAGS_INCLUDES"]}";
+            bo.Configurations["CFLAGS"] = $"{bo.Configurations["CFLAGS"].Trim()} {bo.Configurations["CFLAGS_INCLUDES"]}";
 
-            bo.replaceable["CFLAGS_MCU"] = bo.replaceable.TryGetValue("MCU", out var _mcu) ? $"-mcpu={_mcu}" : "";
+            bo.Configurations["CFLAGS_MCU"] = bo.Configurations.TryGetValue("MCU", out var _mcu) ? $"-mcpu={_mcu}" : "";
 
-            bo.replaceable["CFLAGS"] = $"{bo.replaceable["CFLAGS"].Trim()} {bo.replaceable["CFLAGS_MCU"]}";
+            bo.Configurations["CFLAGS"] = $"{bo.Configurations["CFLAGS"].Trim()} {bo.Configurations["CFLAGS_MCU"]}";
 
-            bo.replaceable["CFLAGS_OPTIMIZATION"] = bo.replaceable.TryGetValue("OPTIMIZATION", out var _optimization) ? $"-{_optimization}" : "-O2";
+            bo.Configurations["CFLAGS_OPTIMIZATION"] = bo.Configurations.TryGetValue("OPTIMIZATION", out var _optimization) ? $"-{_optimization}" : "-O2";
 
-            bo.replaceable["CFLAGS"] = $"{bo.replaceable["CFLAGS"].Trim()} {bo.replaceable["CFLAGS_OPTIMIZATION"]}";
+            bo.Configurations["CFLAGS"] = $"{bo.Configurations["CFLAGS"].Trim()} {bo.Configurations["CFLAGS_OPTIMIZATION"]}";
 
-            bo.replaceable["CFLAGS_STARTUP_ADDRESS"] = bo.replaceable.TryGetValue("STARTUP_ADDRESS", out var _startup_address) ? $"-DUSER_CODE_ADDR={_startup_address}" : "";
+            bo.Configurations["CFLAGS_STARTUP_ADDRESS"] = bo.Configurations.TryGetValue("STARTUP_ADDRESS", out var _startup_address) ? $"-DUSER_CODE_ADDR={_startup_address}" : "";
 
-            bo.replaceable["CFLAGS"] = $"{bo.replaceable["CFLAGS"].Trim()} {bo.replaceable["CFLAGS_STARTUP_ADDRESS"]}";
+            bo.Configurations["CFLAGS"] = $"{bo.Configurations["CFLAGS"].Trim()} {bo.Configurations["CFLAGS_STARTUP_ADDRESS"]}";
 
-            bo.replaceable["CFLAGS"] = bo.replaceable["CFLAGS"].Trim();
+            bo.Configurations["CFLAGS"] = bo.Configurations["CFLAGS"].Trim();
 
-            var dockerContent = dockerContentBuilder.ToString();
+            dockerContent = dockerContentBuilder.ToString();
 
 
-            var commonCorePath = System.IO.Path.Combine(mcuCorePath, "common.netmcu");
+            commonCorePath = System.IO.Path.Combine(mcuCorePath, "common.netmcu");
 
             if (!File.Exists(commonCorePath))
                 throw new Exception($"Common core file not found: {commonCorePath}");
 
-            var commonData = JsonSerializer.Deserialize<CommonFileModel>(File.ReadAllText(commonCorePath), JsonSerializerOptions.Web);
+            commonData = JsonSerializer.Deserialize<CommonFileModel>(File.ReadAllText(commonCorePath), JsonSerializerOptions.Web);
 
             foreach (var req in commonData.Parameters.RequiredValues)
             {
-                if (!bo.replaceable.ContainsKey(req))
+                if (!bo.Configurations.ContainsKey(req))
                     throw new Exception($"Required value '{req}' is not defined in building options.");
             }
             foreach (var def in commonData.Parameters.DefaultValues)
             {
-                if (!bo.replaceable.ContainsKey(def.Key))
-                    bo.replaceable[def.Key] = def.Value;
+                if (!bo.Configurations.ContainsKey(def.Key))
+                    bo.Configurations[def.Key] = def.Value;
             }
 
-            foreach (var kvp in bo.replaceable)
+            foreach (var kvp in bo.Configurations)
             {
                 dockerContent = dockerContent.Replace($"%#{kvp.Key}#%", kvp.Value);
             }
@@ -154,15 +182,15 @@ namespace NETMCUCompiler
             if (!Directory.Exists(objCorePath))
                 Directory.CreateDirectory(objCorePath);
 
-            var mcuObjCorePath = System.IO.Path.Combine(objCorePath, "mcu_core", mcu_type);
+            mcuObjCorePath = System.IO.Path.Combine(objCorePath, "mcu_core", mcu_type);
 
             if (!Directory.Exists(mcuObjCorePath))
                 Directory.CreateDirectory(mcuObjCorePath);
 
-            bool needsRebuild = false;
+            needsRebuild = false;
 
             // Генерируем временный Dockerfile
-            var tempDockerfilePath = System.IO.Path.Combine(mcuObjCorePath, "Dockerfile");
+            tempDockerfilePath = System.IO.Path.Combine(mcuObjCorePath, "Dockerfile");
 
             string oldDockerfileContent = "";
 
@@ -174,7 +202,7 @@ namespace NETMCUCompiler
             else
                 needsRebuild = true;
 
-            var commonOldPath = System.IO.Path.Combine(mcuObjCorePath, "common.netmcu");
+            commonOldPath = System.IO.Path.Combine(mcuObjCorePath, "common.netmcu");
 
             string commonOldContent = "";
 
@@ -187,66 +215,70 @@ namespace NETMCUCompiler
             else
                 needsRebuild = true;
 
-            var buildDir = System.IO.Path.Combine(mcuObjCorePath, "build");
+            buildDir = System.IO.Path.Combine(mcuObjCorePath, "build");
 
             needsRebuild = needsRebuild || !Directory.Exists(buildDir);
 
-            if (needsRebuild)
+            return true;
+        }
+
+        public async Task<bool> BuildCore()
+        {
+            var bo = Options;
+
+            Directory.Delete(mcuObjCorePath, true);
+            Directory.CreateDirectory(mcuObjCorePath);
+
+            DirectoryCopy(mcuCorePath, mcuObjCorePath, true, "(?<!\\.netmcu)$");
+
+            File.WriteAllText(tempDockerfilePath, dockerContent);
+
+            Regex parameterProcessing = new Regex($"%#(\\S+)#%");
+
+            foreach (var path in commonData.Parameters.ProcessingPathes)
             {
-                Directory.Delete(mcuObjCorePath, true);
-                Directory.CreateDirectory(mcuObjCorePath);
+                var files = Directory.GetFiles(mcuObjCorePath, path);
 
-                DirectoryCopy(mcuCorePath, mcuObjCorePath, true, "(?<!\\.netmcu)$");
-
-                File.WriteAllText(tempDockerfilePath, dockerContent);
-
-                Regex parameterProcessing = new Regex($"%#(\\S+)#%");
-
-                foreach (var path in commonData.Parameters.ProcessingPathes)
+                foreach (var file in files)
                 {
-                    var files = Directory.GetFiles(mcuObjCorePath, path);
-
-                    foreach (var file in files)
+                    var content = File.ReadAllText(file);
+                    var newContent = parameterProcessing.Replace(content, match =>
                     {
-                        var content = File.ReadAllText(file);
-                        var newContent = parameterProcessing.Replace(content, match =>
-                        {
-                            var key = match.Value.Substring(2, match.Value.Length - 4).Trim();
-                            if (bo.replaceable.TryGetValue(key, out var value))
-                                return value;
-                            else
-                                return match.Value; // Оставляем без изменений, если не найдено
-                        });
-                        File.WriteAllText(file, newContent);
-                    }
-
+                        var key = match.Value.Substring(2, match.Value.Length - 4).Trim();
+                        if (bo.Configurations.TryGetValue(key, out var value))
+                            return value;
+                        else
+                            return match.Value; // Оставляем без изменений, если не найдено
+                    });
+                    File.WriteAllText(file, newContent);
                 }
 
-                // Собираем образ с тегом 'final-mcu' из сгенерированного Dockerfile
-                var buildArgs = $"build -t final-mcu -f \"{tempDockerfilePath}\" \"{mcuObjCorePath}\"";
-                var buildProcess = Process.Start("docker", buildArgs);
-                buildProcess.WaitForExit();
-
-                if (buildProcess.ExitCode != 0)
-                {
-                    throw new Exception("Failed to build Docker image 'final-mcu'. Check your Dockerfile.");
-                }
-
-                Console.WriteLine("Building Core...");
-
-                var coreBuildCmd = $"run --rm -v \"{mcuObjCorePath}:/project\" final-mcu";
-                // Запуск (исправил кавычки для безопасности в shell)
-                var process = Process.Start("docker", coreBuildCmd);
-
-                process.WaitForExit();
-
-                if (process.ExitCode != 0)
-                    throw new Exception("Failed to build MCU core inside Docker container.");
-
-                File.Copy(commonCorePath, commonOldPath, true);
-
-                Console.WriteLine($"Ядро собрано.");
             }
+
+            // Собираем образ с тегом 'final-mcu' из сгенерированного Dockerfile
+            var buildArgs = $"build -t final-mcu -f \"{tempDockerfilePath}\" \"{mcuObjCorePath}\"";
+            var buildProcess = Process.Start("docker", buildArgs);
+            buildProcess.WaitForExit();
+
+            if (buildProcess.ExitCode != 0)
+            {
+                throw new Exception("Failed to build Docker image 'final-mcu'. Check your Dockerfile.");
+            }
+
+            Console.WriteLine("Building Core...");
+
+            var coreBuildCmd = $"run --rm -v \"{mcuObjCorePath}:/project\" final-mcu";
+            // Запуск (исправил кавычки для безопасности в shell)
+            var process = Process.Start("docker", coreBuildCmd);
+
+            process.WaitForExit();
+
+            if (process.ExitCode != 0)
+                throw new Exception("Failed to build MCU core inside Docker container.");
+
+            File.Copy(commonCorePath, commonOldPath, true);
+
+            Console.WriteLine($"Ядро собрано.");
 
             // После сборки парсим результат
             CoreSymbols = Stm32MapParser.ParseSymbols(System.IO.Path.Combine(buildDir, "kernel.map"));
@@ -261,6 +293,18 @@ namespace NETMCUCompiler
 
         public async Task<bool> Compile()
         {
+            CompilationContext cc = new CompilationContext();
+
+            foreach (var reference in referenceContexts)
+            {
+                foreach (var tree in reference.Value.Compilation.SyntaxTrees)
+                {
+                    LibraryCompiler.CompileProject(tree, cc);
+                }
+                //await reference.Value.BuildCore();
+            }
+
+
             Stm32MethodBuilder e = new Stm32MethodBuilder();
 
             var t = e.BuildAsm(ProgramMainNode);
@@ -279,6 +323,8 @@ namespace NETMCUCompiler
             {
                 // 2. Загружаем проект напрямую
                 var project = await workspace.OpenProjectAsync(Path);
+
+                CollectProjectContexts(project);
 
                 var msbuildProject = new Microsoft.Build.Evaluation.Project(project.FilePath);
 
@@ -307,23 +353,26 @@ namespace NETMCUCompiler
                     {
                         var symbol = semanticModel.GetDeclaredSymbol(classDecl) as INamedTypeSymbol;
 
-                        if (classDecl.Identifier.Text == "Program")
+                        if (type == BuildingOutputType.Executable)
                         {
-                            var pmn = classDecl.DescendantNodes().OfType<MethodDeclarationSyntax>()
-                                .Where(x => x.Modifiers.Any(m => m.Text == "static") && x.Identifier.Text == "Main")
-                                .FirstOrDefault();
-
-                            if (pmn != null)
+                            if (classDecl.Identifier.Text == "Program")
                             {
-                                var pmm = symbol.GetMembers()
-                                        .Where(x => x.Name == "Main" && x.IsStatic)
-                                        .Cast<IMethodSymbol>()
-                                        .FirstOrDefault();
-                                if (pmm != null)
+                                var pmn = classDecl.DescendantNodes().OfType<MethodDeclarationSyntax>()
+                                    .Where(x => x.Modifiers.Any(m => m.Text == "static") && x.Identifier.Text == "Main")
+                                    .FirstOrDefault();
+
+                                if (pmn != null)
                                 {
-                                    ProgramMainMethod = pmm;
-                                    ProgramMainNode = pmn;
-                                    ProgramMainType = symbol;
+                                    var pmm = symbol.GetMembers()
+                                            .Where(x => x.Name == "Main" && x.IsStatic)
+                                            .Cast<IMethodSymbol>()
+                                            .FirstOrDefault();
+                                    if (pmm != null)
+                                    {
+                                        ProgramMainMethod = pmm;
+                                        ProgramMainNode = pmn;
+                                        ProgramMainType = symbol;
+                                    }
                                 }
                             }
                         }
@@ -357,9 +406,172 @@ namespace NETMCUCompiler
             }
         }
 
+        Dictionary<ProjectId, BuildingContext> referenceContexts = new Dictionary<ProjectId, BuildingContext>();
+
+        public void CollectProjectContexts(Microsoft.CodeAnalysis.Project project)
+        {
+            var solution = project.Solution;
+
+            foreach (var reference in project.ProjectReferences)
+            {
+                // Находим проект в текущем решении по его ID
+                var referencedProject = solution.GetProject(reference.ProjectId);
+
+                if (referencedProject != null && !string.IsNullOrEmpty(referencedProject.FilePath) && referencedProject.Name != "NETMCUCore")
+                {
+                    // Добавляем путь к .csproj файлу
+                    referenceContexts[reference.ProjectId] = new BuildingContext(referencedProject.FilePath, BuildingOutputType.Library);
+                }
+            }
+        }
+
+
         private async Task LoadOptions(configureRecord[] configureMethods, SemanticModel semanticModel)
         {
             var bo = Options!;
+
+            TValue? GetBaseValue<TValue>(AttributeData _ma
+                , configureRecord item
+                , string name
+                , string argName
+                , out bool exists
+                , bool optionalArg = false)
+                where TValue : IConvertible
+            {
+                var na = _ma.NamedArguments;
+
+                name = na.FirstOrDefault(x => x.Key == name).Value.Value?.ToString();
+
+                if (name == default)
+                {
+                    name = na.FirstOrDefault(x => x.Key == argName).Value.Value?.ToString();
+
+                    item.args.TryGetValue(name, out var arg);
+
+                    if (optionalArg && arg == null)
+                    {
+                        exists = false; return default(TValue?);
+                    }
+
+                    if (arg is ExpressionSyntax argExp)
+                    {
+                        name = semanticModel.GetConstantValue(arg as ExpressionSyntax).ToString();
+                        exists = true;
+                    }
+                    else
+                        throw new InvalidCastException($"Argument '{argName}' value is not an expression syntax. Actual type: {arg.GetType().FullName}");
+                }
+                else
+                    exists = true;
+
+
+                return (TValue)Convert.ChangeType(name, typeof(TValue));
+            }
+
+            TValue[]? GetArrayBaseValue<TValue>(AttributeData _ma
+                , configureRecord item
+                , string name
+                , string argName
+                , out bool exists
+                , bool optionalArg = false)
+                where TValue : IConvertible
+            {
+                var na = _ma.NamedArguments;
+
+                List<TValue>? values = null;
+
+                values = na
+                    .Where(x => x.Key == name)
+                    .Select(x => (KeyValuePair<string, TypedConstant>?)x)
+                    .FirstOrDefault()?
+                    .Value
+                    .Values
+                    .Select(x => (TValue)Convert.ChangeType(x.Value.ToString(), typeof(TValue)))
+                    .ToList();
+
+                if (values == default)
+                {
+                    name = na.FirstOrDefault(x => x.Key == argName).Value.Value?.ToString();
+
+                    item.args.TryGetValue(name, out var arg);
+
+                    if (optionalArg && arg == null)
+                    {
+                        exists = false; return default(TValue[]?);
+                    }
+
+                    if (arg is CollectionExpressionSyntax collectionExp)
+                    {
+
+                        foreach (var element in collectionExp.Elements)
+                        {
+                            if (element is ExpressionElementSyntax exprElement)
+                            {
+                                var constantValue = semanticModel.GetConstantValue(exprElement.Expression);
+                                if (constantValue.HasValue && constantValue.Value != null)
+                                {
+                                    values.Add((TValue)Convert.ChangeType(constantValue.Value.ToString(), typeof(TValue)));
+                                }
+                            }
+                        }
+                        exists = true;
+                        return values.ToArray();
+                    }
+                    else
+                        throw new InvalidCastException($"Argument '{argName}' value is not an expression syntax. Actual type: {arg.GetType().FullName}");
+                }
+                else
+                    exists = true;
+
+                return values.ToArray();
+            }
+
+            string[][]? GetArrayValue(AttributeData _ma
+                , configureRecord item
+                , string argName
+                , bool optionalArg = false)
+            {
+                var na = _ma.NamedArguments;
+
+                List<string[]>? values = null;
+
+                var name = na.FirstOrDefault(x => x.Key == argName).Value.Value?.ToString();
+
+                item.args.TryGetValue(name, out var arg);
+
+                if (optionalArg && arg == null) return default(string[][]?);
+
+                if (arg is CollectionExpressionSyntax collectionExp)
+                {
+                    values = new List<string[]>();
+                    foreach (var element in collectionExp.Elements)
+                    {
+                        if (element is ExpressionElementSyntax exprElement)
+                        {
+                            if (exprElement.Expression is ObjectCreationExpressionSyntax objCreation)
+                            {
+                                var args = objCreation.ArgumentList?.Arguments;
+                                if (args != null)
+                                {
+                                    // Превращаем аргументы конструктора (Enum и String) в массив строк
+                                    var errorData = args.Value.Select(a =>
+                                    {
+                                        var val = semanticModel.GetConstantValue(a.Expression).Value;
+                                        return val?.ToString() ?? "";
+                                    }).ToArray();
+
+                                    values.Add(errorData);
+                                }
+                            }
+                        }
+                    }
+
+                    return values.ToArray();
+                }
+                else
+                    throw new InvalidCastException($"Argument '{argName}' value is not an expression syntax. Actual type: {arg.GetType().FullName}");
+            }
+
 
             foreach (var item in configureMethods)
             {
@@ -370,145 +582,133 @@ namespace NETMCUCompiler
                     if (_ma.AttributeClass.BaseType?.ToDisplayString() != "System.MCU.Compiler.Attributes.MCUConfigurationValueAttribute")
                         continue;
 
-                    var na = _ma.NamedArguments;
+                    if (_ma.AttributeClass.ToDisplayString() == "System.MCU.Compiler.Attributes.InputConfigurationValueAttribute")
+                    {
+                        var name = GetBaseValue<string>(_ma, item, "Name", "NameArg", out _);
+                        var type = GetBaseValue<string>(_ma, item, "Type", "TypeArg", out _);
+
+                        var defaultValue = GetBaseValue<string>(_ma, item, "DefaultValue", "DefaultValueArg", out _);
+
+                        var required = GetBaseValue<bool>(_ma, item, "Required", "RequiredArg", out var reqEx, true);
+
+                        if (!reqEx) required = true;
+
+                        var validValues = GetArrayBaseValue<string>(_ma, item, "ValidValues", "ValidValuesArg", out _, true);
+
+                        var messages = GetArrayValue(_ma, item, "ErrorsArg", true);
+
+                        //var validValues = na.FirstOrDefault(x => x.Key == "Required").Value.Value?.ToString();
+
+                        //if (validValues == default)
+                        //{
+                        //    validValues = na.FirstOrDefault(x => x.Key == "RequiredArg").Value.Value?.ToString();
+
+                        //    var arg = item.args[validValues];
+
+                        //    validValues = semanticModel.GetConstantValue(arg as ExpressionSyntax).ToString();
+                        //}
+                        bo.InputConfigurations.Add(new BuildingInputConfigurationModel
+                        {
+                            Name = name,
+                            Type = type,
+                            DefaultValue = defaultValue,
+                            Required = required,
+                            ValidValues = validValues,
+                            Messages = messages?.ToDictionary(x => x[0], x => x[1])
+                        });
+
+                        continue;
+                    }
 
                     if (_ma.AttributeClass.ToDisplayString() == "System.MCU.Compiler.Attributes.ReplaceConfigurationValueAttribute")
                     {
-                        var name = na.FirstOrDefault(x => x.Key == "Name").Value.Value?.ToString();
+                        var name = GetBaseValue<string>(_ma, item, "Name", "NameArg", out _);
 
-                        if (name == default)
-                        {
-                            name = na.FirstOrDefault(x => x.Key == "NameArg").Value.Value?.ToString();
+                        var value = GetBaseValue<string>(_ma, item, "Value", "ValueArg", out _);
 
-                            var arg = item.args[name];
-
-                            name = semanticModel.GetConstantValue(arg as ExpressionSyntax).ToString();
-                        }
-
-                        var value = na.FirstOrDefault(x => x.Key == "Value").Value.Value?.ToString();
-
-                        if (value == default)
-                        {
-                            value = na.FirstOrDefault(x => x.Key == "ValueArg").Value.Value?.ToString();
-
-                            var arg = item.args[value];
-
-                            value = semanticModel.GetConstantValue(arg as ExpressionSyntax).ToString();
-                        }
-
-                        bo.replaceable[name] = value;
+                        bo.Configurations[name] = value;
 
                         continue;
                     }
 
                     if (_ma.AttributeClass.ToDisplayString() == "System.MCU.Compiler.Attributes.IncludeConfigurationValueAttribute")
                     {
-                        var include = na.FirstOrDefault(x => x.Key == "Include").Value.Value?.ToString();
+                        var include = GetBaseValue<string>(_ma, item, "Include", "IncludeArg", out _);
 
-                        if (include == default)
-                        {
-                            include = na.FirstOrDefault(x => x.Key == "IncludeArg").Value.Value?.ToString();
-
-                            var arg = item.args[include];
-
-                            include = semanticModel.GetConstantValue(arg as ExpressionSyntax).ToString();
-                        }
-
-                        if (!bo.include.Contains(include))
-                            bo.include.Add(include);
+                        if (!bo.Include.Contains(include))
+                            bo.Include.Add(include);
 
                         continue;
                     }
 
                     if (_ma.AttributeClass.ToDisplayString() == "System.MCU.Compiler.Attributes.DriveConfigurationValueAttribute")
                     {
-                        var path = na.FirstOrDefault(x => x.Key == "Path").Value.Value?.ToString();
+                        var path = GetBaseValue<string>(_ma, item, "Path", "PathArg", out _);
 
-                        if (path == default)
-                        {
-                            path = na.FirstOrDefault(x => x.Key == "PathArg").Value.Value?.ToString();
-
-                            var arg = item.args[path];
-
-                            path = semanticModel.GetConstantValue(arg as ExpressionSyntax).ToString();
-                        }
-
-                        if (!bo.drives.Contains(path))
-                            bo.drives.Add(path);
+                        if (!bo.Drives.Contains(path))
+                            bo.Drives.Add(path);
 
                         continue;
                     }
 
                     if (_ma.AttributeClass.ToDisplayString() == "System.MCU.Compiler.Attributes.PackageConfigurationValueAttribute")
                     {
-                        var name = na.FirstOrDefault(x => x.Key == "Name").Value.Value?.ToString();
+                        var name = GetBaseValue<string>(_ma, item, "Name", "NameArg", out _);
 
-                        if (name == default)
-                        {
-                            name = na.FirstOrDefault(x => x.Key == "NameArg").Value.Value?.ToString();
-
-                            var arg = item.args[name];
-
-                            name = semanticModel.GetConstantValue(arg as ExpressionSyntax).ToString();
-                        }
-
-                        if (!bo.packages.Contains(name))
-                            bo.packages.Add(name);
+                        if (!bo.Packages.Contains(name))
+                            bo.Packages.Add(name);
 
                         continue;
                     }
 
                     if (_ma.AttributeClass.ToDisplayString() == "System.MCU.Compiler.Attributes.LibraryConfigurationValueAttribute")
                     {
-                        var path = na.FirstOrDefault(x => x.Key == "Path").Value.Value?.ToString();
+                        var path = GetBaseValue<string>(_ma, item, "Path", "PathArg", out _);
 
-                        if (path == default)
-                        {
-                            path = na.FirstOrDefault(x => x.Key == "PathArg").Value.Value?.ToString();
-
-                            var arg = item.args[path];
-
-                            path = semanticModel.GetConstantValue(arg as ExpressionSyntax).ToString();
-                        }
-
-                        if (!bo.libraries.Contains(path))
-                            bo.libraries.Add(path);
+                        if (!bo.Libraries.Contains(path))
+                            bo.Libraries.Add(path);
 
                         continue;
                     }
 
                     if (_ma.AttributeClass.ToDisplayString() == "System.MCU.Compiler.Attributes.DefineConfigurationValueAttribute")
                     {
-                        var name = na.FirstOrDefault(x => x.Key == "Name").Value.Value?.ToString();
+                        var name = GetBaseValue<string>(_ma, item, "Name", "NameArg", out _);
 
-                        if (name == default)
-                        {
-                            name = na.FirstOrDefault(x => x.Key == "NameArg").Value.Value?.ToString();
+                        var value = GetBaseValue<string>(_ma, item, "Value", "ValueArg", out _, true);
 
-                            var arg = item.args[name];
-
-                            name = semanticModel.GetConstantValue(arg as ExpressionSyntax).ToString();
-                        }
-
-                        var value = na.FirstOrDefault(x => x.Key == "Value").Value.Value?.ToString();
-
-                        if (value == default)
-                        {
-                            value = na.FirstOrDefault(x => x.Key == "ValueArg").Value.Value?.ToString();
-
-                            var arg = item.args.GetValueOrDefault(value);
-
-                            value = arg == null ? null : semanticModel.GetConstantValue(arg as ExpressionSyntax).ToString();
-                        }
-
-                        if (!bo.defines.ContainsKey(name))
-                            bo.defines.Add(name, value);
+                        if (!bo.Defines.ContainsKey(name))
+                            bo.Defines.Add(name, value);
 
                         continue;
                     }
                 }
             }
         }
+
+
+        public void DumpMeta(string outputPath)
+        {
+            var meta = new
+            {
+                CompilerOptions = new
+                {
+                    Options.Include,
+                    Options.Libraries,
+                    Options.Defines,
+                    Options.Packages,
+                    Options.InputConfigurations
+                },
+                // Данные для линковки
+                NativeImports = NativeRelocations,
+                // Карта экспорта (чтобы другие либы могли звать нас)
+                Exports = ExportMap
+            };
+
+            string json = JsonSerializer.Serialize(meta, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(outputPath, json);
+        }
+
 
         #region Utils
 

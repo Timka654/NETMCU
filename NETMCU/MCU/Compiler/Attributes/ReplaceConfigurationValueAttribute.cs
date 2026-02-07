@@ -15,40 +15,25 @@ namespace System.MCU.Compiler.Attributes
     }
 
     [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
-    public class IncludeConfigurationValueAttribute : MCUConfigurationValueAttribute
-    {
-        public string? Include { get; set; }
-        public string? IncludeArg { get; set; }
-    }
-
-    [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
-    public class DriveConfigurationValueAttribute : MCUConfigurationValueAttribute
-    {
-        public string? Path { get; set; }
-        public string? PathArg { get; set; }
-    }
-
-    [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
-    public class PackageConfigurationValueAttribute : MCUConfigurationValueAttribute
-    {
-        public string? Name { get; set; }
-        public string? NameArg { get; set; }
-    }
-
-    [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
-    public class LibraryConfigurationValueAttribute: MCUConfigurationValueAttribute
-    {
-        public string? Path { get; set; }
-        public string? PathArg { get; set; }
-    }
-
-    [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
-    public class DefineConfigurationValueAttribute : MCUConfigurationValueAttribute
+    public class InputConfigurationValueAttribute : MCUConfigurationValueAttribute
     {
         public string? Name { get; set; }
         public string? NameArg { get; set; }
 
-        public string? Value { get; set; }
-        public string? ValueArg { get; set; }
+        public bool? Type { get; set; }
+        public string? TypeArg { get; set; }
+
+        public string? DefaultValue { get; set; }
+        public string? DefaultValueArg { get; set; }
+
+        public bool? Required { get; set; }
+        public string? RequiredArg { get; set; }
+
+        
+        public string[]? ValidValues { get; set; }
+        public string? ValidValuesArg { get; set; }
+
+        public string? ErrorsArg { get; set; }
+       
     }
 }

@@ -531,15 +531,75 @@ namespace NETMCUCompiler.CodeBuilder
                 return 0; // Или выброс исключения "Неподдерживаемый тип константы"
             }
         }
-        public static void EmitCall(string methodName, CompilationContext context)
+        public static void EmitCall(string methodName, CompilationContext context, bool isNative = false)
         {
             context.Emit($"BL {methodName}");
 
-            // В бинарник пишем 4 байта (BL - это 32-битная инструкция в Thumb-2)
-            // Эти байты потом пропатчит линковщик под реальный адрес
-            context.Bytecode(0x00); context.Bytecode(0xF0);
-            context.Bytecode(0x00); context.Bytecode(0xF8);
+            if (isNative)
+            {
+                context.AddRelocation(methodName);
+            }
+
+            // Пишем 4 байта заглушки (0x00F0 0x00F8). 
+            // Линковщик найдет их по оффсету из NativeRelocations и заменит на реальный оффсет.
+            context.Write16(0xF000);
+            context.Write16(0xF800);
         }
+        public static void EmitMethodPrologue(bool isInstance, CompilationContext context)
+        {
+            // Сохраняем регистры. r4 будет нашим "this" внутри функции.
+            context.Emit("PUSH {r4-r11, lr}");
+
+            if (isInstance)
+            {
+                // По стандарту ARM r0 - первый аргумент. 
+                // В экземпляре класса r0 всегда передает адрес объекта.
+                context.Emit("MOV r4, r0");
+                context.RegisterMap["this"] = 4; // Закрепляем r4 за контекстом объекта
+            }
+        }
+        public static void EmitMethodEpilogue(CompilationContext context)
+        {
+            context.Emit("Main_exit:"); // Метка для быстрых выходов (return)
+            context.Emit("POP {r4-r11, pc}");
+
+            // Бинарный код для POP {r4-r11, pc} 
+            // r4-r11 (8 регистров) + PC = 9 бит в маске
+            context.Write16(0xBDF0);
+
+            context.Emit(".align 4"); // Выравнивание для следующей функции
+        }
+
+        public void EmitMethodFrame(MethodDeclarationSyntax node, CompilationContext ctx, bool isInstance)
+        {
+            ctx.Emit($"PUSH {{r4-r11, lr}}");
+            if (isInstance)
+            {
+                // Перекладываем указатель на объект из r0 в r4 (сохраняемый регистр)
+                // Теперь r4 — это наш неизменный 'this' на протяжении всей функции
+                ctx.Emit("MOV r4, r0");
+                ctx.RegisterMap["this"] = 4;
+            }
+            // ... остальная логика тела ...
+        }
+        //public static void EmitFieldAccess(MemberAccessExpressionSyntax node, int targetReg, CompilationContext context)
+        //{
+        //    // 1. Получаем базу (например, 'this' из r4 или переменную из другого регистра)
+        //    string baseName = node.Expression.ToString();
+        //    int baseReg = (baseName == "this") ? 4 : context.RegisterMap[baseName];
+
+        //    // 2. Ищем оффсет поля в метаданных типа
+        //    // (Тут нам нужно знать тип переменной baseName, добавим это в контекст позже)
+        //    int offset = GetFieldOffset(baseName, node.Name.Identifier.Text);
+
+        //    // 3. Генерируем LDR targetReg, [baseReg, #offset]
+        //    context.Emit($"LDR r{targetReg}, [r{baseReg}, #{offset}]");
+
+        //    // Опкод LDR (Rd, [Rn, #imm]): 0x6800 | (imm5 << 6) | (Rn << 3) | Rd
+        //    ushort opcode = (ushort)(0x6800 | ((offset / 4) << 6) | (baseReg << 3) | targetReg);
+        //    context.Write16(opcode);
+        //}
+
         public static bool TryGetAsConstant(ExpressionSyntax expr, CompilationContext context, out int value)
         {
             value = 0;
