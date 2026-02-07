@@ -23,16 +23,15 @@ namespace devmcu
             options.SetOptimization("Os");
             options.SetStartupAddress(0x08004000); // Адрес начала пользовательского кода
             //options.SetVectorTablePath("vector_table.s");
-            options.Include("Drivers/STM32F4xx_HAL_Driver/Inc");
-            options.AddLibrary("Drivers/STM32F4xx_HAL_Driver/Src");
-            options.InstallPackage("CMSIS");
-
-            options.SetConfiguration("HAL_PATH", "Drivers/STM32F4xx_HAL_Driver");
+            //options.Include("Drivers/STM32F4xx_HAL_Driver/Inc");
+            //options.AddLibrary("Drivers/STM32F4xx_HAL_Driver/Src");
+            //options.InstallPackage("CMSIS");
 
 
-            #region Test
+            options.SetConfiguration("HAL_VERSION", "stm32f4xx");
 
-            #endregion
+            options.SetConfiguration($"HAL_CONFIGURATION_DIR_PATH", "%#EXECUTABLE_PROJECT_ROOT#%/HAL_INPUT");
+            options.SetConfiguration($"HAL_CONFIGURATION_FILE_NAME", "stm32f4xx_hal_conf.h");
         }
     }
 }

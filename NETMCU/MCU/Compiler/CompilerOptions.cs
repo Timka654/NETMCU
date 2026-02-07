@@ -11,8 +11,14 @@ namespace System.MCU.Compiler
         [IncludeConfigurationValue(IncludeArg = nameof(path))]
         public void Include(string path) { }
 
-        [DriveConfigurationValue(PathArg = nameof(path))]
-        public void MapDrive(string path) { }
+        [DriveConfigurationValue(PathArg = nameof(path), ContainerPathArg = nameof(containerPath))]
+        public void MapDrive(string path, string containerPath) { }
+
+        [RepositoryConfigurationValue(PathArg = nameof(path)
+            , UrlArg = nameof(url)
+            , BranchArg = nameof(branch)
+            , DepthArg = nameof(depth))]
+        public void RepositoryClone(string url, string branch, int depth, string path) { }
 
         [PackageConfigurationValue(NameArg = nameof(name))]
         public void InstallPackage(string name) { }

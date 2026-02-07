@@ -27,6 +27,7 @@ namespace NETMCUCompiler
     {
         public string Path { get; private set; } = path;
 
+        public string RootPath { get; private set; }
         public string BinPath { get; private set; }
         public string ObjPath { get; private set; }
 
@@ -114,6 +115,8 @@ namespace NETMCUCompiler
 
             bo.Configurations["CFLAGS"] = string.Empty;
 
+            bo.Configurations["EXECUTABLE_PROJECT_ROOT"] = RootPath;
+
 
             mcuCorePath = System.IO.Path.Combine(corePath, "mcu");
 
@@ -151,7 +154,14 @@ namespace NETMCUCompiler
 
             bo.Configurations["CFLAGS"] = $"{bo.Configurations["CFLAGS"].Trim()} {bo.Configurations["CFLAGS_DEFINES"]}";
 
-            bo.Configurations["CFLAGS_INCLUDES"] = string.Join(" ", bo.Include.Select(inc => $"-I/project/{inc}"));
+            var libs = string.Join($" \\{Environment.NewLine}", bo.Libraries.GroupBy(x => x).Select(x => x.Key));
+
+            if (!string.IsNullOrWhiteSpace(libs))
+                libs += $" \\";
+
+            bo.Configurations["CFLAGS_LIBS"] = libs;
+
+            bo.Configurations["CFLAGS_INCLUDES"] = string.Join(" ", bo.Include.Select(inc => $"-I{inc}").GroupBy(x=>x).Select(x=>x.Key));
 
             bo.Configurations["CFLAGS"] = $"{bo.Configurations["CFLAGS"].Trim()} {bo.Configurations["CFLAGS_INCLUDES"]}";
 
@@ -168,6 +178,15 @@ namespace NETMCUCompiler
             bo.Configurations["CFLAGS"] = $"{bo.Configurations["CFLAGS"].Trim()} {bo.Configurations["CFLAGS_STARTUP_ADDRESS"]}";
 
             bo.Configurations["CFLAGS"] = bo.Configurations["CFLAGS"].Trim();
+
+            bo.Configurations["GIT_CLONE_COMMANDS"] = string.Join(Environment.NewLine, bo.GitRepositories.Select(repo =>
+            {
+                var url = repo.Url ?? throw new Exception("Repository URL is not defined.");
+                var branch = repo.Branch ?? "main";
+                return $"RUN git clone --branch {branch} --depth {(repo.Depth ?? 1)} {url} \"{repo.Path}\"";
+            }));
+
+            bo.Configurations["PACKAGE_INSTALL_COMMANDS"] = string.Join(Environment.NewLine, bo.Packages.Select(pkg => $"RUN apt-get install -y {pkg}"));
 
             dockerContent = dockerContentBuilder.ToString();
 
@@ -188,6 +207,8 @@ namespace NETMCUCompiler
             if (type != BuildingOutputType.Executable) return true;
 
 
+            bo.BuildConfigurations();
+
             commonCorePath = System.IO.Path.Combine(mcuCorePath, "common.netmcu");
 
             if (!File.Exists(commonCorePath))
@@ -206,10 +227,7 @@ namespace NETMCUCompiler
                     bo.Configurations[def.Key] = def.Value;
             }
 
-            foreach (var kvp in bo.Configurations)
-            {
-                dockerContent = dockerContent.Replace($"%#{kvp.Key}#%", kvp.Value);
-            }
+            dockerContent = bo.FillConfiguration(dockerContent, out var ic, out var ir);
 
             foreach (var item in bo.InputConfigurations)
             {
@@ -335,7 +353,13 @@ namespace NETMCUCompiler
 
                 Console.WriteLine("Building Core...");
 
-                var coreBuildCmd = $"run --rm -v \"{mcuObjCorePath}:/project\" final-mcu";
+                var pathes = new List<string>() {
+                $"-v \"{mcuObjCorePath}:/project\""
+                };
+
+                pathes.AddRange(bo.Drives.Select(d => $"-v \"{d.Path}:{d.ContainerPath}\""));
+
+                var coreBuildCmd = $"run --rm {string.Join(" ", pathes)} final-mcu";
                 // Запуск (исправил кавычки для безопасности в shell)
                 var process = Process.Start("docker", coreBuildCmd);
 
@@ -522,8 +546,9 @@ namespace NETMCUCompiler
 
                 string outDir = msbuildProject.GetPropertyValue("OutDir"); // Путь к bin
                 string intermediateDir = msbuildProject.GetPropertyValue("IntermediateOutputPath"); // Путь к obj
-                ObjPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(project.FilePath, "..", intermediateDir));
-                BinPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(project.FilePath, "..", outDir));
+                RootPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(project.FilePath, ".."));
+                ObjPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(RootPath, intermediateDir));
+                BinPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(RootPath, outDir));
 
                 ProjectCollection.GlobalProjectCollection.UnloadProject(msbuildProject);
 
@@ -806,6 +831,29 @@ namespace NETMCUCompiler
                         continue;
                     }
 
+                    if (_ma.AttributeClass.ToDisplayString() == "System.MCU.Compiler.Attributes.RepositoryConfigurationValueAttribute")
+                    {
+                        var path = GetBaseValue<string>(_ma, item, "Path", "PathArg", out _);
+
+                        var url = GetBaseValue<string>(_ma, item, "Url", "UrlArg", out _);
+
+                        var branch = GetBaseValue<string>(_ma, item, "Branch", "BranchArg", out _);
+
+                        var depth = GetBaseValue<int>(_ma, item, "Depth", "DepthArg", out var depthEx);
+
+                        if(!depthEx) depth = 1;
+
+                        bo.GitRepositories.Add(new GitRepositoryConfiguration
+                        {
+                            Path = path,
+                            Url = url,
+                            Branch = branch,
+                            Depth = depth
+                        });
+
+                        continue;
+                    }
+
                     if (_ma.AttributeClass.ToDisplayString() == "System.MCU.Compiler.Attributes.ReplaceConfigurationValueAttribute")
                     {
                         var name = GetBaseValue<string>(_ma, item, "Name", "NameArg", out _);
@@ -830,9 +878,10 @@ namespace NETMCUCompiler
                     if (_ma.AttributeClass.ToDisplayString() == "System.MCU.Compiler.Attributes.DriveConfigurationValueAttribute")
                     {
                         var path = GetBaseValue<string>(_ma, item, "Path", "PathArg", out _);
+                        var containerPath = GetBaseValue<string>(_ma, item, "ContainerPath", "ContainerPathArg", out _);
 
-                        if (!bo.Drives.Contains(path))
-                            bo.Drives.Add(path);
+                        if (!bo.Drives.Any(d => d.Path == path && d.ContainerPath == containerPath))
+                            bo.Drives.Add(new DriveConfiguration { Path = path, ContainerPath = containerPath });
 
                         continue;
                     }

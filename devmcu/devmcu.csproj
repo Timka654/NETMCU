@@ -10,4 +10,7 @@
 	<ItemGroup>
 	  <ProjectReference Include="..\NETMCUCore.STM\NETMCUCore.STM.csproj" />
 	</ItemGroup>
+	<ItemGroup>
+	  <Folder Include="HAL_INPUT\" />
+	</ItemGroup>
 </Project>

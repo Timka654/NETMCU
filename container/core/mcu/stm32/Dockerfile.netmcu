@@ -1,10 +1,13 @@
 FROM base-mcu AS final-mcu
 RUN apt-get update && apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+%#PACKAGE_INSTALL_COMMANDS#%
+%#GIT_CLONE_COMMANDS#%
 ENV MY_CFLAGS="-mcpu=%#MCU#% -mthumb -DUSER_CODE_ADDR=%#STARTUP_ADDRESS#% %#CFLAGS#% -nostartfiles -ffreestanding"
 # Сборка ядра
 CMD arm-none-eabi-gcc $MY_CFLAGS \
     /project/src/main.c \
     /project/src/startup.c \
+	%#CFLAGS_LIBS#%
     -o /project/build/kernel.elf \
     -T /project/linker.ld \
     -Wl,-Map=/project/build/kernel.map,--cref
