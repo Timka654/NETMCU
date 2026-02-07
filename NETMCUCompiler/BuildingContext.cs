@@ -4,10 +4,12 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
+using Microsoft.Extensions.Options;
 using NETMCUCompiler.CodeBuilder;
 using Newtonsoft.Json.Linq;
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.Intrinsics.X86;
 using System.Text;
 using System.Text.Json;
@@ -47,6 +49,11 @@ namespace NETMCUCompiler
             if (Options != null)
                 throw new Exception("Building context is already loaded");
 
+            await loadAsync(Options);
+        }
+
+        private async Task loadAsync(BuildingOptions? options)
+        {
             if (Directory.Exists(path))
             {
                 var projectPaths = Directory.GetFiles(path, "*.csproj", SearchOption.TopDirectoryOnly);
@@ -64,13 +71,23 @@ namespace NETMCUCompiler
 
             await TryLoadProject();
 
-            await TryLoadCoreData();
+
+            Options = new BuildingOptions();
+
+            SemanticMethodExtractor e = new SemanticMethodExtractor();
+            var configureMethods = e.ExtractInvocations(mcuConfigClassDeclaration, mcuConfigSemanticModel).ToArray();
+
+            options ??= Options;
 
             foreach (var reference in referenceContexts)
             {
-                await reference.Value.LoadAsync();
+                await reference.Value.loadAsync(options);
                 needsRebuildCore = needsRebuildCore || reference.Value.needsRebuildCore;
             }
+
+            await LoadOptions(configureMethods, mcuConfigSemanticModel, options);
+
+            await TryLoadCoreData(options);
         }
 
         CommonFileModel? commonData;
@@ -79,10 +96,9 @@ namespace NETMCUCompiler
 
         string mcuObjCorePath, mcuCorePath, tempDockerfilePath, dockerContent, commonCorePath, commonOldPath, buildDir, mcuBinPath;
 
-        private async Task<bool> TryLoadCoreData()
+        private async Task<bool> TryLoadCoreData(BuildingOptions bo)
         {
             var bc = this;
-            var bo = Options;
 
             if (!bo.Configurations.TryGetValue("CORE_PATH", out var corePath))
                 throw new Exception("CORE_PATH is not defined in building options.");
@@ -95,6 +111,9 @@ namespace NETMCUCompiler
 #else
                 throw new Exception($"Core path does not exist: {corePath}");
 #endif
+
+            bo.Configurations["CFLAGS"] = string.Empty;
+
 
             mcuCorePath = System.IO.Path.Combine(corePath, "mcu");
 
@@ -116,7 +135,7 @@ namespace NETMCUCompiler
                 else
                     throw new Exception($"MCU specific Dockerfile not found: {dockerFilePath}");
             }
-            else
+            else if (type == BuildingOutputType.Executable)
                 throw new Exception("MCU_TYPE is not defined in building options.");
 
             if (!bo.Configurations.TryAdd("CFLAGS", string.Empty))
@@ -153,6 +172,22 @@ namespace NETMCUCompiler
             dockerContent = dockerContentBuilder.ToString();
 
 
+
+            mcuBinPath = System.IO.Path.Combine(this.BinPath, "NETMCU");
+
+            if (!Directory.Exists(mcuBinPath))
+                Directory.CreateDirectory(mcuBinPath);
+
+            var objCorePath = System.IO.Path.Combine(bc.ObjPath, "NETMCU");
+
+            if (!Directory.Exists(objCorePath))
+                Directory.CreateDirectory(objCorePath);
+
+            needsRebuildCore = false;
+
+            if (type != BuildingOutputType.Executable) return true;
+
+
             commonCorePath = System.IO.Path.Combine(mcuCorePath, "common.netmcu");
 
             if (!File.Exists(commonCorePath))
@@ -176,25 +211,49 @@ namespace NETMCUCompiler
                 dockerContent = dockerContent.Replace($"%#{kvp.Key}#%", kvp.Value);
             }
 
+            foreach (var item in bo.InputConfigurations)
+            {
+                if (bo.Configurations.TryGetValue(item.Name, out var iVal))
+                {
+                    var validate = item.Type switch
+                    {
+                        "float" => double.TryParse(iVal, CultureInfo.InvariantCulture, out _),
+                        "number" => long.TryParse(iVal, CultureInfo.InvariantCulture, out _),
+                        "string" => true,
+                        "bool" => bool.TryParse(iVal, out _),
+                        _ => throw new Exception($"Unsupported input configuration type: {item.Type} for configuration '{item.Name}'")
+                    };
 
-            mcuBinPath = System.IO.Path.Combine(this.BinPath, "NETMCU");
+                    if (!validate)
+                    {
+                        item.Messages.TryGetValue("INVALID_TYPE", out var msg);
+                        throw new Exception(msg ?? $"Input configuration '{item.Name}' has invalid value format '{iVal}' for type '{item.Type}'.");
+                    }
 
-            if (!Directory.Exists(mcuBinPath))
-                Directory.CreateDirectory(mcuBinPath);
+                    if (item.ValidValues != null && !item.ValidValues.Contains(iVal))
+                    { 
+                        item.Messages.TryGetValue("INVALID_VALUE", out var msg);
+                        throw new Exception(msg ?? $"Input configuration '{item.Name}' has invalid value '{iVal}'. Valid values are: {string.Join(", ", item.ValidValues.Select(x=>$"\"{x}\""))}.");
+                    }
+                }
+                else
+                {
+                    if (item.Required)
+                    {
+                        item.Messages.TryGetValue("REQUIRED_VALUE", out var msg);
+                        throw new Exception(msg ?? $"Required input configuration '{item.Name}' is not defined in building options.");
+                    }
 
-            var objCorePath = System.IO.Path.Combine(bc.ObjPath, "NETMCU");
+                    if (item.DefaultValue != default)
+                        bo.Configurations[item.Name] = item.DefaultValue;
+                }
+            }
 
-            if (!Directory.Exists(objCorePath))
-                Directory.CreateDirectory(objCorePath);
 
             mcuObjCorePath = System.IO.Path.Combine(objCorePath, "mcu_core", mcu_type);
 
             if (!Directory.Exists(mcuObjCorePath))
                 Directory.CreateDirectory(mcuObjCorePath);
-
-            needsRebuildCore = false;
-
-            if (type != BuildingOutputType.Executable) return true;
 
             // Генерируем временный Dockerfile
             tempDockerfilePath = System.IO.Path.Combine(mcuObjCorePath, "Dockerfile");
@@ -312,12 +371,6 @@ namespace NETMCUCompiler
 
         private async Task<bool> compile(LinkerContext? linker)
         {
-            foreach (var reference in referenceContexts)
-            {
-                if (!await reference.Value.compile(linker))
-                    throw new Exception($"Failed to compile referenced project: {reference.Value.Path}");
-            }
-
             var buildLinkers = new List<LinkerContext>() { compilationLinker };
 
             if (linker != null && linker != compilationLinker)
@@ -326,24 +379,32 @@ namespace NETMCUCompiler
             compilationContext = new CompilationContext()
             {
                 ExceptClasses = [mcuConfigClassDeclaration],
-                ExceptMethods = [ProgramMainNode],
+                ExceptMethods = [],
                 BinaryPath = System.IO.Path.Combine(mcuBinPath, "output.bin"),
                 LinkerContexts = buildLinkers.ToArray(),
-                BuildingContext = this
+                BuildingContext = this,
+                MainMethod = ProgramMainNode,
+                ProgramClass = ProgramMainTypeNode
             };
 
-            if (type == BuildingOutputType.Executable)
-            {
-                Stm32MethodBuilder e = new Stm32MethodBuilder(compilationContext, ProgramSemanticModel);
+            //if (type == BuildingOutputType.Executable)
+            //{
+            //    Stm32MethodBuilder e = new Stm32MethodBuilder(compilationContext, ProgramSemanticModel);
 
-                e.BuildAsm(ProgramMainNode);
-            }
+            //    e.BuildAsm(ProgramMainNode);
+            //}
 
             foreach (var tree in Compilation.SyntaxTrees)
             {
                 var sm = Compilation.GetSemanticModel(tree);
 
                 LibraryCompiler.CompileProject(tree, compilationContext, sm);
+            }
+
+            foreach (var reference in referenceContexts)
+            {
+                if (!await reference.Value.compile(linker))
+                    throw new Exception($"Failed to compile referenced project: {reference.Value.Path}");
             }
 
 
@@ -376,14 +437,22 @@ namespace NETMCUCompiler
         byte[] BuildImage()
         {
             // Список для хранения финального бинарника
-            List<byte> finalImage = new List<byte>();
+
+            using var finalImage = new MemoryStream();
             // Карта смещений: Контекст -> Смещение в итоговом файле
             Dictionary<CompilationContext, int> contextOffsets = new();
 
-            foreach (var ctx in CollectReferences())
+            var refs = CollectReferences().Prepend(this).ToArray();
+
+            foreach (var ctx in refs)
             {
-                contextOffsets[ctx.compilationContext] = finalImage.Count;
-                finalImage.AddRange(ctx.compilationContext.Bin.ToArray());
+                contextOffsets[ctx.compilationContext] = (int)finalImage.Position;
+
+                var oldOffset = ctx.compilationContext.Bin.Position;
+
+                ctx.compilationContext.Bin.Position = 0;
+                ctx.compilationContext.Bin.CopyTo(finalImage);
+                ctx.compilationContext.Bin.Position = oldOffset;
             }
 
             byte[] binary = finalImage.ToArray();
@@ -438,12 +507,10 @@ namespace NETMCUCompiler
 
 
         ClassDeclarationSyntax? mcuConfigClassDeclaration = null;
+        SemanticModel? mcuConfigSemanticModel = null;
 
         private async Task TryLoadProject()
         {
-            INamedTypeSymbol? classSymbol;
-            SemanticModel? classSemanticModel = null;
-
             using (var workspace = MSBuildWorkspace.Create())
             {
                 // 2. Загружаем проект напрямую
@@ -507,12 +574,11 @@ namespace NETMCUCompiler
                         // Проверяем наследование от вашего базового класса в NETMCUCore
                         if (IsTargetClass(symbol, "System.MCU.Compiler.ConfigureEntry"))
                         {
-                            if (classSemanticModel != null)
+                            if (mcuConfigClassDeclaration != null)
                                 throw new Exception("Multiple configuration classes found in project. Only one configuration class is allowed.");
 
                             mcuConfigClassDeclaration = classDecl;
-                            classSymbol = symbol;
-                            classSemanticModel = semanticModel;
+                            mcuConfigSemanticModel = semanticModel;
                             Console.WriteLine($"Найдена конфигурация: {symbol.Name} в файле {tree.FilePath}");
                             // Здесь вызывайте вашу логику извлечения аргументов
                         }
@@ -520,16 +586,10 @@ namespace NETMCUCompiler
                 }
 
 
-                if (classSemanticModel == null)
+                if (mcuConfigClassDeclaration == null)
                     throw new Exception("No configuration class found in project. You must have single class intherits from System.MCU.Compiler.ConfigureEntry");
 
 
-                Options = new BuildingOptions();
-
-                SemanticMethodExtractor e = new SemanticMethodExtractor();
-                var configureMethods = e.ExtractInvocations(mcuConfigClassDeclaration, classSemanticModel).ToArray();
-
-                await LoadOptions(configureMethods, classSemanticModel);
             }
         }
 
@@ -554,10 +614,8 @@ namespace NETMCUCompiler
         }
 
 
-        private async Task LoadOptions(configureRecord[] configureMethods, SemanticModel semanticModel)
+        private async Task LoadOptions(configureRecord[] configureMethods, SemanticModel semanticModel, BuildingOptions bo)
         {
-            var bo = Options!;
-
             TValue? GetBaseValue<TValue>(AttributeData _ma
                 , configureRecord item
                 , string name

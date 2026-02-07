@@ -13,11 +13,6 @@ namespace devmcu
             //        new InputConfigurationErrorMessage(InputConfigurationErrorMessage.InvalidType, "test_invalid_type"),
             //        new InputConfigurationErrorMessage(InputConfigurationErrorMessage.RequiredValue, "test_required_value")]);
 
-            options.AddInputConfiguration("HAL_PATH", "string",
-                errors: [
-                    //new InputConfigurationErrorMessage(InputConfigurationErrorMessage.InvalidValue, "test_invalid_value"),
-                    //new InputConfigurationErrorMessage(InputConfigurationErrorMessage.InvalidType, "test_invalid_type"),
-                    new InputConfigurationErrorMessage(InputConfigurationErrorMessage.RequiredValue, "For continue - please set \"HAL_PATH\" configuration value")]);
 
             options.SetMCUType("STM32");
             options.SetMCU("cortex-m4");
@@ -31,6 +26,8 @@ namespace devmcu
             options.Include("Drivers/STM32F4xx_HAL_Driver/Inc");
             options.AddLibrary("Drivers/STM32F4xx_HAL_Driver/Src");
             options.InstallPackage("CMSIS");
+
+            options.SetConfiguration("HAL_PATH", "Drivers/STM32F4xx_HAL_Driver");
 
 
             #region Test

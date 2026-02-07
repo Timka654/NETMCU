@@ -14,7 +14,11 @@ namespace NETMCUCompiler.CodeBuilder
         public Dictionary<string, int> ConstantMap { get; } = new();
 
         public ClassDeclarationSyntax[] ExceptClasses { get; set; } = [];
+
         public MethodDeclarationSyntax[] ExceptMethods { get; set; } = [];
+
+        public required ClassDeclarationSyntax? ProgramClass { get; set; }
+        public required MethodDeclarationSyntax? MainMethod { get; set; }
 
         public required LinkerContext[] LinkerContexts { get; set; }
 
@@ -113,6 +117,11 @@ namespace NETMCUCompiler.CodeBuilder
             {
                 c.OutputMethods[fullName] = new LinkerRecord(this, position, isStatic) ;
             }
+        }
+
+        public override string ToString()
+        {
+            return BuildingContext.Path;
         }
     }
 

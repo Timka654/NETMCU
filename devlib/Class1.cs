@@ -12,7 +12,6 @@ namespace devlib
         [TA(new[] { "arg1", "arg2" })]
         public void Method1()
         {
-            Console.WriteLine("Hello, World!");
         }
     }
 }

@@ -295,20 +295,30 @@ namespace NETMCUCompiler.CodeBuilder
 
             // 1. Собираем типы
             var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
-            foreach (var @class in classes)
+            foreach (var @class in classes.OrderByDescending(x => x == context.ProgramClass))
             {
                 if (context.ExceptClasses.Contains(@class)) continue;
 
                 context.RegisterType(@class, model);
-            }
 
-            // 2. Компилируем методы
-            foreach (var @class in classes)
-            {
-                if (context.ExceptClasses.Contains(@class)) continue;
-
-                foreach (var method in @class.Members.OfType<MethodDeclarationSyntax>())
+                foreach (var member in @class.Members.OfType<FieldDeclarationSyntax>()
+                    .Where(f => f.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword))))
                 {
+                    foreach (var variable in member.Declaration.Variables)
+                    {
+                        if (variable.Initializer?.Value is LiteralExpressionSyntax literal)
+                        {
+                            int val = ASMInstructions.ParseLiteral(literal);
+                            context.ConstantMap[variable.Identifier.Text] = val;
+                            context.ConstantMap[$"{@class.Identifier.Text}.{variable.Identifier.Text}"] = val;
+                        }
+                    }
+                }
+
+                foreach (var method in @class.Members.OfType<MethodDeclarationSyntax>().OrderByDescending(x => x == context.MainMethod))
+                {
+                    if (context.ExceptMethods.Contains(method)) continue;
+
                     CompileMethod(@class, method, context, model);
                 }
             }
@@ -316,6 +326,23 @@ namespace NETMCUCompiler.CodeBuilder
 
         private static void CompileMethod(ClassDeclarationSyntax cls, MethodDeclarationSyntax method, CompilationContext ctx, SemanticModel model)
         {
+            // Очищаем карту регистров для нового метода, но ConstantMap сохраняем!
+            ctx.RegisterMap.Clear();
+            ctx.NextFreeRegister = 4;
+
+            // СБОР ЛОКАЛЬНЫХ КОНСТАНТ МЕТОДА (вторая часть BuildAsm)
+            var localConsts = method.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
+                                .Where(s => s.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword)));
+
+            foreach (var localConst in localConsts)
+            {
+                foreach (var v in localConst.Declaration.Variables)
+                {
+                    if (v.Initializer?.Value is LiteralExpressionSyntax lit)
+                        ctx.ConstantMap[v.Identifier.Text] = ASMInstructions.ParseLiteral(lit);
+                }
+            }
+
             bool isStatic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
             ctx.RegisterMethod(model, cls, method, isStatic);
 
