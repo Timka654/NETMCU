@@ -6,6 +6,14 @@ using System.Xml.Linq;
 
 namespace NETMCUCompiler.CodeBuilder
 {
+    // В CompilationContext.cs добавь:
+    public class StackVariable
+    {
+        public string Name { get; set; }
+        public TypeMetadata Metadata { get; set; }
+        public int StackOffset { get; set; } // Смещение от SP (указателя стека)
+    }
+
     public class CompilationContext
     {
         public StringBuilder Asm { get; } = new();
@@ -13,7 +21,7 @@ namespace NETMCUCompiler.CodeBuilder
         public Dictionary<string, int> RegisterMap { get; } = new();
         public Dictionary<string, int> ConstantMap { get; } = new();
 
-        public ClassDeclarationSyntax[] ExceptClasses { get; set; } = [];
+        public TypeDeclarationSyntax[] ExceptClasses { get; set; } = [];
 
         public MethodDeclarationSyntax[] ExceptMethods { get; set; } = [];
 
@@ -27,7 +35,7 @@ namespace NETMCUCompiler.CodeBuilder
         public string BinaryPath { get; set; }
 
         public int LabelCount = 0;
-
+        public int LastUsedRegister { get; set; } = 4; // Текущий "рабочий" регистр
         // Вспомогательные методы, чтобы не писать каждый раз Asm.AppendLine
         public void Emit(string line) => Asm.AppendLine($"    {line}");
 
@@ -75,7 +83,7 @@ namespace NETMCUCompiler.CodeBuilder
             }
         }
 
-        public void RegisterType(ClassDeclarationSyntax node, SemanticModel semanticModel)
+        public void RegisterType(TypeDeclarationSyntax node, SemanticModel semanticModel)
         {
             if (LinkerContexts == null) return;
 
@@ -103,7 +111,7 @@ namespace NETMCUCompiler.CodeBuilder
             }
         }
 
-        public void RegisterMethod(SemanticModel model, ClassDeclarationSyntax cls, MethodDeclarationSyntax method, bool isStatic)
+        public void RegisterMethod(SemanticModel model, TypeDeclarationSyntax cls, MethodDeclarationSyntax method, bool isStatic)
         {
             var classSymbol = model.GetDeclaredSymbol(cls) as INamedTypeSymbol;
             var methodSymbol = model.GetDeclaredSymbol(method) as IMethodSymbol;
@@ -116,6 +124,31 @@ namespace NETMCUCompiler.CodeBuilder
             foreach (var c in LinkerContexts)
             {
                 c.OutputMethods[fullName] = new LinkerRecord(this, position, isStatic) ;
+            }
+        }
+
+        // Храним переменные, которые живут на стеке
+        public Dictionary<string, StackVariable> StackMap { get; } = new();
+
+        private int _currentStackPointer = 0;
+
+        public void AllocateOnStack(string name, string typeName)
+        {
+            foreach (var c in LinkerContexts)
+            {
+                if (c.OutputTypes.TryGetValue(typeName, out var meta))
+                {
+                    StackMap[name] = new StackVariable
+                    {
+                        Name = name,
+                        Metadata = meta,
+                        StackOffset = _currentStackPointer
+                    };
+                    _currentStackPointer += meta.TotalSize;
+
+                    // Важно: в будущем нам нужно будет вычесть _currentStackPointer из SP 
+                    // в начале метода (Prologue), чтобы зарезервировать место.
+                }
             }
         }
 

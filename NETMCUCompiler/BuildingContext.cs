@@ -418,18 +418,18 @@ namespace NETMCUCompiler
             //    e.BuildAsm(ProgramMainNode);
             //}
 
-            foreach (var tree in Compilation.SyntaxTrees)
-            {
-                var sm = Compilation.GetSemanticModel(tree);
-
-                LibraryCompiler.CompileProject(tree, compilationContext, sm);
-            }
-
             foreach (var reference in referenceContexts)
             {
                 if (!await reference.Value.compile(linker))
                     throw new Exception($"Failed to compile referenced project: {reference.Value.Path}");
             }
+
+            //foreach (var tree in Compilation.SyntaxTrees)
+            //{
+            //    var sm = Compilation.GetSemanticModel(tree);
+
+                LibraryCompiler.CompileProject(Compilation, compilationContext);
+            //}
 
 
 
@@ -964,6 +964,11 @@ namespace NETMCUCompiler
         void DumpBinary(byte[] data)
         {
             var outputPath = compilationContext.BinaryPath;
+#if DEBUG
+            var asmPath = string.Join('.', outputPath.Split('.').SkipLast(1)) + ".asm";
+
+            File.WriteAllText(asmPath, compilationContext.Asm.ToString());
+#endif
             File.WriteAllBytes(outputPath, data);
         }
 

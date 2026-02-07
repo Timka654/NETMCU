@@ -102,41 +102,165 @@ namespace NETMCUCompiler.CodeBuilder
         }
         public override void VisitExpressionStatement(ExpressionStatementSyntax node)
         {
-            if (node.Expression is AssignmentExpressionSyntax assignment)
+            //if (node.Expression is AssignmentExpressionSyntax assignment)
+            //{
+            //    int targetReg = context.GetVarRegister(assignment.Left.ToString());
+
+            //    if (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+            //    {
+            //        // Обычное a = 1;
+            //        ASMInstructions.EmitExpression(assignment.Right, targetReg, context);
+            //    }
+            //    else
+            //    {
+            //        // Составное присваивание: +=, -=, *=, /=
+            //        // 1. Определяем, какая мат. операция скрыта за знаком
+            //        SyntaxKind opKind = assignment.Kind() switch
+            //        {
+            //            SyntaxKind.AddAssignmentExpression => SyntaxKind.AddExpression,
+            //            SyntaxKind.SubtractAssignmentExpression => SyntaxKind.SubtractExpression,
+            //            SyntaxKind.MultiplyAssignmentExpression => SyntaxKind.MultiplyExpression,
+            //            SyntaxKind.DivideAssignmentExpression => SyntaxKind.DivideExpression,
+            //            _ => SyntaxKind.None
+            //        };
+
+            //        if (opKind != SyntaxKind.None)
+            //        {
+            //            // 2. Вычисляем правую часть во временный регистр r0
+            //            ASMInstructions.EmitExpression(assignment.Right, 0, context);
+
+            //            // 3. Выполняем операцию: target = target (op) r0
+            //            // Например: r4 = r4 + r0
+            //            ASMInstructions.EmitArithmeticOp(opKind, targetReg, targetReg, 0, context);
+            //        }
+            //    }
+            //}
+            // Про Test() и IF мы поговорим в следующих шагах (Шаг 4 и 5)
+            base.VisitExpressionStatement(node);
+        }
+        public override void VisitLiteralExpression(LiteralExpressionSyntax node)
+        {
+            int val = ASMInstructions.ParseLiteral(node);
+            int reg = context.NextFreeRegister++; // Или твоя логика выделения
+            context.Emit($"MOVS R{reg}, #{val}");
+            context.LastUsedRegister = reg;
+        }
+
+        public override void VisitIdentifierName(IdentifierNameSyntax node)
+        {
+            string name = node.Identifier.Text;
+            if (context.RegisterMap.TryGetValue(name, out int reg))
             {
-                int targetReg = context.GetVarRegister(assignment.Left.ToString());
+                context.LastUsedRegister = reg;
+            }
+            // Если переменная на стеке, нам нужно загрузить её в регистр для вычислений
+            else if (context.StackMap.TryGetValue(name, out var stackVar))
+            {
+                int r = context.NextFreeRegister++;
+                context.Emit($"LDR R{r}, [SP, #{stackVar.StackOffset}]");
+                context.LastUsedRegister = r;
+            }
+        }
 
-                if (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+        private void HandleStructAssignment(AssignmentExpressionSyntax node, MemberAccessExpressionSyntax memberAccess, int srcReg)
+        {
+            string structName = memberAccess.Expression.ToString();
+            string fieldName = memberAccess.Name.ToString();
+
+            if (context.StackMap.TryGetValue(structName, out var stackVar))
+            {
+                if (stackVar.Metadata.FieldOffsets.TryGetValue(fieldName, out int fieldOffset))
                 {
-                    // Обычное a = 1;
-                    ASMInstructions.EmitExpression(assignment.Right, targetReg, context);
-                }
-                else
-                {
-                    // Составное присваивание: +=, -=, *=, /=
-                    // 1. Определяем, какая мат. операция скрыта за знаком
-                    SyntaxKind opKind = assignment.Kind() switch
-                    {
-                        SyntaxKind.AddAssignmentExpression => SyntaxKind.AddExpression,
-                        SyntaxKind.SubtractAssignmentExpression => SyntaxKind.SubtractExpression,
-                        SyntaxKind.MultiplyAssignmentExpression => SyntaxKind.MultiplyExpression,
-                        SyntaxKind.DivideAssignmentExpression => SyntaxKind.DivideExpression,
-                        _ => SyntaxKind.None
-                    };
+                    int totalOffset = stackVar.StackOffset + fieldOffset;
 
-                    if (opKind != SyntaxKind.None)
+                    if (node.IsKind(SyntaxKind.SimpleAssignmentExpression))
                     {
-                        // 2. Вычисляем правую часть во временный регистр r0
-                        ASMInstructions.EmitExpression(assignment.Right, 0, context);
+                        context.Emit($"STR R{srcReg}, [SP, #{totalOffset}] @ {structName}.{fieldName} = val");
+                    }
+                    else
+                    {
+                        // Составное: config.Pin |= rSrc;
+                        int tempReg = 0; // Используем r0 как временный для вычислений
+                        context.Emit($"LDR R{tempReg}, [SP, #{totalOffset}] @ Load {structName}.{fieldName}");
 
-                        // 3. Выполняем операцию: target = target (op) r0
-                        // Например: r4 = r4 + r0
-                        ASMInstructions.EmitArithmeticOp(opKind, targetReg, targetReg, 0, context);
+                        SyntaxKind opKind = node.Kind() switch
+                        {
+                            SyntaxKind.OrAssignmentExpression => SyntaxKind.BitwiseOrExpression,   // Исправлено
+                            SyntaxKind.AndAssignmentExpression => SyntaxKind.BitwiseAndExpression, // Исправлено
+                            SyntaxKind.AddAssignmentExpression => SyntaxKind.AddExpression,
+                            _ => SyntaxKind.None
+                        };
+
+                        if (opKind != SyntaxKind.None)
+                        {
+                            ASMInstructions.EmitArithmeticOp(opKind, tempReg, tempReg, srcReg, context);
+                            context.Emit($"STR R{tempReg}, [SP, #{totalOffset}] @ Store updated {structName}.{fieldName}");
+                        }
                     }
                 }
             }
-            // Про Test() и IF мы поговорим в следующих шагах (Шаг 4 и 5)
-            base.VisitExpressionStatement(node);
+            else
+            {
+                throw new Exception($"Структура {structName} не найдена на стеке");
+            }
+        }
+        private void HandleLocalAssignment(AssignmentExpressionSyntax node, int destReg, int srcReg)
+        {
+            if (node.IsKind(SyntaxKind.SimpleAssignmentExpression))
+            {
+                // Обычное x = y;
+                if (destReg != srcReg)
+                    context.Emit($"MOV R{destReg}, R{srcReg}");
+            }
+            else
+            {
+                // Составное присваивание: x |= y, x += y и т.д.
+                // Используем корректные SyntaxKind из Roslyn
+                SyntaxKind opKind = node.Kind() switch
+                {
+                    SyntaxKind.AddAssignmentExpression => SyntaxKind.AddExpression,
+                    SyntaxKind.SubtractAssignmentExpression => SyntaxKind.SubtractExpression,
+                    SyntaxKind.AndAssignmentExpression => SyntaxKind.BitwiseAndExpression, // Исправлено
+                    SyntaxKind.OrAssignmentExpression => SyntaxKind.BitwiseOrExpression,   // Исправлено
+                    _ => SyntaxKind.None
+                };
+
+                if (opKind != SyntaxKind.None)
+                {
+                    // Выполняем операцию: Rdest = Rdest op Rsrc
+                    ASMInstructions.EmitArithmeticOp(opKind, destReg, destReg, srcReg, context);
+                }
+            }
+        }
+        public override void VisitAssignmentExpression(AssignmentExpressionSyntax node)
+        {
+            // 1. Не берем LastUsedRegister, а определяем, КУДА мы хотим получить результат.
+         // Для правой части идеально подходит R0 (стандарт ARM для возврата и параметров).
+            int valueReg = 0;
+
+            // 2. Генерируем код для вычисления правой части прямо в R0.
+            // Теперь (1 << pin) превратится в цепочку команд, финал которой ляжет в R0.
+            ASMInstructions.EmitExpression(node.Right, valueReg, context);
+
+            // 3. Теперь записываем результат из R0 по назначению
+            if (node.Left is MemberAccessExpressionSyntax memberAccess)
+            {
+                // Передаем R0 как источник данных для STR
+                HandleStructAssignment(node, memberAccess, valueReg);
+            }
+            else
+            {
+                string varName = node.Left.ToString();
+                if (context.RegisterMap.TryGetValue(varName, out int destReg))
+                {
+                    // Если пишем в локальную переменную (регистр), просто MOV Rdest, R0
+                    HandleLocalAssignment(node, destReg, valueReg);
+                }
+                else
+                {
+                    throw new Exception($"Переменная {varName} не объявлена");
+                }
+            }
         }
 
         public override void VisitIfStatement(IfStatementSyntax node)
@@ -264,6 +388,19 @@ namespace NETMCUCompiler.CodeBuilder
             // 3. Загружаем аргументы (r0-r3 согласно AAPCS)
             for (int i = 0; i < args.Count; i++)
             {
+                var argument = node.ArgumentList.Arguments[i];
+                if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword))
+                {
+                    string varName = argument.Expression.ToString();
+                    if (context.StackMap.TryGetValue(varName, out var stackVar))
+                    {
+                        // Нам нужен АДРЕС структуры. В ARM это: ADD Rd, SP, #offset
+                        int argReg = i; // Обычно R0-R3
+                        context.Emit($"ADD R{argReg}, SP, #{stackVar.StackOffset}");
+                    }
+                    continue;
+                }
+
                 int targetReg = i + regOffset;
                 if (targetReg > 3)
                     throw new Exception("Поддерживается максимум 4 аргумента (включая this)");
@@ -289,44 +426,92 @@ namespace NETMCUCompiler.CodeBuilder
     }
     public class LibraryCompiler
     {
-        public static void CompileProject(SyntaxTree tree, CompilationContext context, SemanticModel model)
+        public static void CompileProject(Compilation compilation, CompilationContext context)
         {
-            var root = tree.GetRoot();
+            var items = compilation.SyntaxTrees.Select(tree => {
+                var root = tree.GetRoot();
+                var model = compilation.GetSemanticModel(tree);
+                return (root, types: root.DescendantNodes()
+                .OfType<TypeDeclarationSyntax>()
+                .Where(@class => !context.ExceptClasses.Contains(@class))
+                .OrderByDescending(x => x == context.ProgramClass)
+                .ToArray(), 
+                enums: root.DescendantNodes().OfType<EnumDeclarationSyntax>().ToArray(), model);
+            }).ToArray();
 
             // 1. Собираем типы
-            var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
-            foreach (var @class in classes.OrderByDescending(x => x == context.ProgramClass))
+            //var classes = root.DescendantNodes()
+            //    .OfType<TypeDeclarationSyntax>()
+            //    .Where(@class => !context.ExceptClasses.Contains(@class))
+            //    .OrderByDescending(x => x == context.ProgramClass)
+            //    .ToArray();
+
+            foreach (var item in items)
             {
-                if (context.ExceptClasses.Contains(@class)) continue;
-
-                context.RegisterType(@class, model);
-
-                foreach (var member in @class.Members.OfType<FieldDeclarationSyntax>()
-                    .Where(f => f.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword))))
+                foreach (var @enum in item.enums)
                 {
-                    foreach (var variable in member.Declaration.Variables)
+                    var typeSymbol = item.model.GetDeclaredSymbol(@enum) as INamedTypeSymbol;
+
+                    foreach (var member in @enum.Members)
                     {
-                        if (variable.Initializer?.Value is LiteralExpressionSyntax literal)
+                        // Получаем значение через семантическую модель (Roslyn сам посчитает 0, 1, 2...)
+                        var symbol = item.model.GetDeclaredSymbol(member);
+                        if (symbol?.ConstantValue != null)
                         {
-                            int val = ASMInstructions.ParseLiteral(literal);
-                            context.ConstantMap[variable.Identifier.Text] = val;
-                            context.ConstantMap[$"{@class.Identifier.Text}.{variable.Identifier.Text}"] = val;
+                            int val = Convert.ToInt32(symbol.ConstantValue);
+
+                            // 1. Пытаемся получить символ типа через семантическую модель
+                            // Если по какой-то причине символ не определен, откатываемся к ToString()
+                            // Но для 'var' здесь уже будет реальное имя (например, GPIO_InitTypeDef)
+                            string typeName = typeSymbol?.ToDisplayString();
+
+
+                            string fullName = $"{(typeName ?? @enum.Identifier.Text)}.{member.Identifier.Text}";
+
+                            context.ConstantMap[fullName] = val; // "GPIO_Mode.OutputPushPull"
+                            context.ConstantMap[member.Identifier.Text] = val; // "OutputPushPull"
                         }
                     }
                 }
 
-                foreach (var method in @class.Members.OfType<MethodDeclarationSyntax>().OrderByDescending(x => x == context.MainMethod))
+                foreach (var @class in item.types)
                 {
-                    if (context.ExceptMethods.Contains(method)) continue;
+                    context.RegisterType(@class, item.model);
 
-                    CompileMethod(@class, method, context, model);
+                    foreach (var member in @class.Members.OfType<FieldDeclarationSyntax>()
+                        .Where(f => f.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword))))
+                    {
+                        foreach (var variable in member.Declaration.Variables)
+                        {
+                            if (variable.Initializer?.Value is LiteralExpressionSyntax literal)
+                            {
+                                int val = ASMInstructions.ParseLiteral(literal);
+                                context.ConstantMap[variable.Identifier.Text] = val;
+                                context.ConstantMap[$"{@class.Identifier.Text}.{variable.Identifier.Text}"] = val;
+                            }
+                        }
+                    }
+                }
+            }
+
+            foreach (var item in items)
+            {
+                foreach (var @class in item.types)
+                {
+                    foreach (var method in @class.Members.OfType<MethodDeclarationSyntax>().OrderByDescending(x => x == context.MainMethod))
+                    {
+                        if (context.ExceptMethods.Contains(method)) continue;
+
+                        CompileMethod(@class, method, context, item.model);
+                    }
                 }
             }
         }
 
-        private static void CompileMethod(ClassDeclarationSyntax cls, MethodDeclarationSyntax method, CompilationContext ctx, SemanticModel model)
+        private static void CompileMethod(TypeDeclarationSyntax cls, MethodDeclarationSyntax method, CompilationContext ctx, SemanticModel model)
         {
-            // Очищаем карту регистров для нового метода, но ConstantMap сохраняем!
+            if (method.Body == null && method.ExpressionBody == null) return;
+
             ctx.RegisterMap.Clear();
             ctx.NextFreeRegister = 4;
 
@@ -349,6 +534,22 @@ namespace NETMCUCompiler.CodeBuilder
             // Настраиваем фрейм (с учетом 'this' если метод не static)
             ASMInstructions.EmitMethodPrologue(!isStatic, ctx);
 
+            var declarations = method.DescendantNodes().OfType<VariableDeclarationSyntax>();
+            foreach (var decl in declarations)
+            {
+                // 1. Пытаемся получить символ типа через семантическую модель
+                var typeSymbol = model.GetTypeInfo(decl.Type).Type;
+
+                // Если по какой-то причине символ не определен, откатываемся к ToString()
+                // Но для 'var' здесь уже будет реальное имя (например, GPIO_InitTypeDef)
+                string typeName = typeSymbol?.ToDisplayString() ?? decl.Type.ToString();
+
+                foreach (var v in decl.Variables)
+                {
+                    // Теперь ctx получит правильное имя типа даже для var
+                    ctx.AllocateOnStack(v.Identifier.Text, typeName);
+                }
+            }
             // Пользуемся нашим старым добрым билдером для внутренностей
             var builder = new Stm32MethodBuilder(ctx, model);
             builder.Visit(method.Body);

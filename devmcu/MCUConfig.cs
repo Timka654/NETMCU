@@ -18,6 +18,7 @@ namespace devmcu
             options.SetMCU("cortex-m4");
             options.SetMemoryLayout(1024 * 256, 1024 * 64); // 256KB Flash, 64KB RAM
             options.SetCStandard("c11");
+            options.Define("STM32F401xC");
             options.Define("USE_HAL_DRIVER");
             options.Define("DEV_Test", "query");
             options.SetOptimization("Os");
@@ -28,10 +29,12 @@ namespace devmcu
             //options.InstallPackage("CMSIS");
 
 
+            options.SetConfiguration("HAL_SERIES", "f4");
             options.SetConfiguration("HAL_VERSION", "stm32f4xx");
 
             options.SetConfiguration($"HAL_CONFIGURATION_DIR_PATH", "%#EXECUTABLE_PROJECT_ROOT#%/HAL_INPUT");
             options.SetConfiguration($"HAL_CONFIGURATION_FILE_NAME", "stm32f4xx_hal_conf.h");
+
         }
     }
 }
