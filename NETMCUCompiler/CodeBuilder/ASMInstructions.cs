@@ -528,16 +528,16 @@ namespace NETMCUCompiler.CodeBuilder
             }
             catch
             {
-                return 0; // Или выброс исключения "Неподдерживаемый тип константы"
+                throw new Exception("Неподдерживаемый тип константы");
             }
         }
-        public static void EmitCall(string methodName, CompilationContext context, bool isNative = false)
+        public static void EmitCall(string methodName, CompilationContext context, string? nativeCallName = null)
         {
             context.Emit($"BL {methodName}");
 
-            if (isNative)
+            if (nativeCallName != null)
             {
-                context.AddRelocation(methodName);
+                context.AddRelocation(nativeCallName);
             }
 
             // Пишем 4 байта заглушки (0x00F0 0x00F8). 

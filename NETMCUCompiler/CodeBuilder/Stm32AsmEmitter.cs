@@ -1,19 +1,14 @@
 ﻿using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using NETMCUCompiler.CodeBuilder.Dev;
 using System;
+using System.Reflection;
 
 namespace NETMCUCompiler.CodeBuilder
 {
-    public class Stm32MethodBuilder(CompilationContext context) : CSharpSyntaxWalker
+    public class Stm32MethodBuilder(CompilationContext context, SemanticModel semanticModel) : CSharpSyntaxWalker
     {
-        public Stm32MethodBuilder() : this(new CompilationContext())
-        {
-                
-        }
-
-        public (string code, byte[] logic) BuildAsm(MethodDeclarationSyntax tree)
+        public void BuildAsm(MethodDeclarationSyntax tree)
         {
             var classNode = tree.FirstAncestorOrSelf<ClassDeclarationSyntax>();
             if (classNode != null)
@@ -46,9 +41,8 @@ namespace NETMCUCompiler.CodeBuilder
                         context.ConstantMap[v.Identifier.Text] = ASMInstructions.ParseLiteral(lit);
                 }
             }
-            ASMInstructions.EmitFunctionFrame(tree, context, () => Visit(tree));
 
-            return (context.Asm.ToString(), context.Bin.ToArray());
+            ASMInstructions.EmitFunctionFrame(tree, context, () => Visit(tree));
         }
         public override void VisitLocalDeclarationStatement(LocalDeclarationStatementSyntax node)
         {
@@ -184,6 +178,12 @@ namespace NETMCUCompiler.CodeBuilder
         //    ASMInstructions.EmitMovRegister(targetReg, 0, context);
         //}
 
+        public override void VisitClassDeclaration(ClassDeclarationSyntax node)
+        {
+            if (context.MCUConfigClass == node) return;
+            base.VisitClassDeclaration(node);
+        }
+
         private void ProcessCondition(ExpressionSyntax condition, string failedLabel)
         {
             if (condition is BinaryExpressionSyntax bin)
@@ -239,27 +239,48 @@ namespace NETMCUCompiler.CodeBuilder
 
         public override void VisitInvocationExpression(InvocationExpressionSyntax node)
         {
-            var args = node.ArgumentList.Arguments;
+            // 1. Получаем символ метода через семантическую модель
+            var methodSymbol = semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
+            if (methodSymbol == null) throw new Exception("Symbol not found");
 
-            // 1. Загружаем аргументы в r0-r3 (стандарт ARM)
-            for (int i = 0; i < args.Count && i < 4; i++)
+            var args = node.ArgumentList.Arguments;
+            int regOffset = 0;
+
+            // 2. Если метод не статический, грузим 'this' в r0
+            if (!methodSymbol.IsStatic)
             {
-                // Вычисляем значение аргумента прямо в регистр i
-                ASMInstructions.EmitExpression(args[i].Expression, i, context,
-                        0);
+                // Вычисляем объект (например, в 'myObj.Method()', это 'myObj')
+                if (node.Expression is MemberAccessExpressionSyntax memberAccess)
+                    ASMInstructions.EmitExpression(memberAccess.Expression, 0, context);
+                else
+                    context.Emit("MOV r0, r4"); // Если просто Method(), значит это this (лежит в r4)
+
+                regOffset = 1;
             }
 
-            // 2. Генерируем BL
-            string methodName = node.Expression.ToString();
-            ASMInstructions.EmitCall(methodName, context);
+            // 3. Загружаем остальные аргументы в r(regOffset)...r3
+            for (int i = 0; i < args.Count && (i + regOffset) < 4; i++)
+            {
+                ASMInstructions.EmitExpression(args[i].Expression, i + regOffset, context);
+            }
 
-            base.VisitInvocationExpression(node);
+            // 4. Проверяем на нативность
+            var nativeAttribute = methodSymbol
+                .GetAttributes()
+                .FirstOrDefault(a => a.AttributeClass.Name.Contains("NativeCall"));
+
+            // 5. Генерируем вызов по полному имени для линковщика
+            string fullName = methodSymbol.ToDisplayString();
+            ASMInstructions.EmitCall(fullName, context, (string?)nativeAttribute?.ConstructorArguments.First().Value);
+
+            // ВАЖНО: не вызываем base.VisitInvocationExpression, 
+            // так как мы уже вручную посетили все аргументы через EmitExpression
         }
 
     }
     public class LibraryCompiler
     {
-        public static void CompileProject(SyntaxTree tree, CompilationContext context)
+        public static void CompileProject(SyntaxTree tree, CompilationContext context, SemanticModel model)
         {
             var root = tree.GetRoot();
 
@@ -267,32 +288,33 @@ namespace NETMCUCompiler.CodeBuilder
             var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
             foreach (var @class in classes)
             {
-                context.TypeManager.RegisterType(@class);
+                if (@class == context.MCUConfigClass) continue;
+
+                context.RegisterType(@class, model);
             }
 
             // 2. Компилируем методы
             foreach (var @class in classes)
             {
+                if (@class == context.MCUConfigClass) continue;
+
                 foreach (var method in @class.Members.OfType<MethodDeclarationSyntax>())
                 {
-                    CompileMethod(@class, method, context);
+                    CompileMethod(@class, method, context, model);
                 }
             }
         }
 
-        private static void CompileMethod(ClassDeclarationSyntax cls, MethodDeclarationSyntax method, CompilationContext ctx)
+        private static void CompileMethod(ClassDeclarationSyntax cls, MethodDeclarationSyntax method, CompilationContext ctx, SemanticModel model)
         {
-            string fullName = $"{cls.Identifier.Text}_{method.Identifier.Text}";
-
-            // Регистрируем точку входа в ExportMap
-            ctx.ExportMap[fullName] = (int)ctx.Bin.Position;
+            bool isStatic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
+            ctx.RegisterMethod(model, cls, method, isStatic);
 
             // Настраиваем фрейм (с учетом 'this' если метод не static)
-            bool isStatic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
             ASMInstructions.EmitMethodPrologue(!isStatic, ctx);
 
             // Пользуемся нашим старым добрым билдером для внутренностей
-            var builder = new Stm32MethodBuilder(ctx);
+            var builder = new Stm32MethodBuilder(ctx, model);
             builder.Visit(method.Body);
 
             ASMInstructions.EmitMethodEpilogue(ctx);

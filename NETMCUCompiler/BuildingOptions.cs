@@ -18,7 +18,7 @@ namespace NETMCUCompiler
         public Dictionary<string, string>? Messages { get; set; }
     }
 
-    internal class BuildingOptions
+    public class BuildingOptions
     {
         public Dictionary<string, string> Configurations { get; set; } = new()
             {

@@ -21,7 +21,7 @@ namespace NETMCUCompiler
         Library
     }
 
-    internal class BuildingContext(string path, BuildingOutputType type)
+    public class BuildingContext(string path, BuildingOutputType type)
     {
         public string Path { get; private set; } = path;
 
@@ -37,12 +37,9 @@ namespace NETMCUCompiler
         public INamedTypeSymbol? ProgramMainType { get; private set; }
         public IMethodSymbol? ProgramMainMethod { get; private set; }
         public MethodDeclarationSyntax? ProgramMainNode { get; private set; }
+        public SemanticModel? ProgramSemanticModel { get; private set; }
 
 
-
-        public Dictionary<string, int> ExportMap { get; } = new();
-
-        public Dictionary<string, List<int>> NativeRelocations { get; } = new();
 
         public async Task LoadAsync()
         {
@@ -64,23 +61,24 @@ namespace NETMCUCompiler
                 throw new Exception("Building context path must point to .csproj file or folder with single .csproj file");
             }
 
-            await TryLoad();
+            await TryLoadProject();
 
-            await Load2();
+            await TryLoadCoreData();
 
             foreach (var reference in referenceContexts)
             {
                 await reference.Value.LoadAsync();
+                needsRebuildCore = needsRebuildCore || reference.Value.needsRebuildCore;
             }
         }
 
         CommonFileModel? commonData;
 
-        bool needsRebuild;
+        bool needsRebuildCore;
 
-        string mcuObjCorePath, mcuCorePath, tempDockerfilePath, dockerContent, commonCorePath, commonOldPath, buildDir;
+        string mcuObjCorePath, mcuCorePath, tempDockerfilePath, dockerContent, commonCorePath, commonOldPath, buildDir, mcuBinPath;
 
-        private async Task<bool> Load2()
+        private async Task<bool> TryLoadCoreData()
         {
             var bc = this;
             var bo = Options;
@@ -177,6 +175,12 @@ namespace NETMCUCompiler
                 dockerContent = dockerContent.Replace($"%#{kvp.Key}#%", kvp.Value);
             }
 
+
+            mcuBinPath = System.IO.Path.Combine(this.BinPath, "NETMCU");
+
+            if (!Directory.Exists(mcuBinPath))
+                Directory.CreateDirectory(mcuBinPath);
+
             var objCorePath = System.IO.Path.Combine(bc.ObjPath, "NETMCU");
 
             if (!Directory.Exists(objCorePath))
@@ -187,7 +191,9 @@ namespace NETMCUCompiler
             if (!Directory.Exists(mcuObjCorePath))
                 Directory.CreateDirectory(mcuObjCorePath);
 
-            needsRebuild = false;
+            needsRebuildCore = false;
+
+            if (type != BuildingOutputType.Executable) return true;
 
             // Генерируем временный Dockerfile
             tempDockerfilePath = System.IO.Path.Combine(mcuObjCorePath, "Dockerfile");
@@ -197,10 +203,10 @@ namespace NETMCUCompiler
             if (File.Exists(tempDockerfilePath))
             {
                 oldDockerfileContent = File.ReadAllText(tempDockerfilePath);
-                needsRebuild = dockerContent != oldDockerfileContent;
+                needsRebuildCore = dockerContent != oldDockerfileContent;
             }
             else
-                needsRebuild = true;
+                needsRebuildCore = true;
 
             commonOldPath = System.IO.Path.Combine(mcuObjCorePath, "common.netmcu");
 
@@ -210,14 +216,14 @@ namespace NETMCUCompiler
             {
                 commonOldContent = File.ReadAllText(commonOldPath);
 
-                needsRebuild = needsRebuild || (File.ReadAllText(commonOldPath) != File.ReadAllText(commonCorePath));
+                needsRebuildCore = needsRebuildCore || (File.ReadAllText(commonOldPath) != File.ReadAllText(commonCorePath));
             }
             else
-                needsRebuild = true;
+                needsRebuildCore = true;
 
             buildDir = System.IO.Path.Combine(mcuObjCorePath, "build");
 
-            needsRebuild = needsRebuild || !Directory.Exists(buildDir);
+            needsRebuildCore = needsRebuildCore || !Directory.Exists(buildDir);
 
             return true;
         }
@@ -225,6 +231,8 @@ namespace NETMCUCompiler
         public async Task<bool> BuildCore()
         {
             var bo = Options;
+
+            if (!needsRebuildCore) return true;
 
             Directory.Delete(mcuObjCorePath, true);
             Directory.CreateDirectory(mcuObjCorePath);
@@ -291,31 +299,62 @@ namespace NETMCUCompiler
             return true;
         }
 
+        CompilationContext? compilationContext;
+        LinkerContext? compilationLinker = new LinkerContext();
+
         public async Task<bool> Compile()
         {
-            CompilationContext cc = new CompilationContext();
+            return await compile(compilationLinker);
+        }
 
+        private async Task<bool> compile(LinkerContext? linker)
+        {
             foreach (var reference in referenceContexts)
             {
-                foreach (var tree in reference.Value.Compilation.SyntaxTrees)
-                {
-                    LibraryCompiler.CompileProject(tree, cc);
-                }
-                //await reference.Value.BuildCore();
+                if (!await reference.Value.compile(linker))
+                    throw new Exception($"Failed to compile referenced project: {reference.Value.Path}");
             }
 
+            var buildLinkers = new List<LinkerContext>() { compilationLinker};
 
-            Stm32MethodBuilder e = new Stm32MethodBuilder();
+            if (linker != null && linker != compilationLinker)
+                buildLinkers.Add(linker);
 
-            var t = e.BuildAsm(ProgramMainNode);
+            compilationContext = new CompilationContext()
+            {
+                MCUConfigClass = mcuConfigClassDeclaration,
+                BinaryPath = System.IO.Path.Combine(mcuBinPath, "output.bin"),
+                LinkerContexts = buildLinkers.ToArray(),
+                BuildingContext = this
+            };
+
+            if (type == BuildingOutputType.Executable)
+            {
+                Stm32MethodBuilder e = new Stm32MethodBuilder(compilationContext, ProgramSemanticModel);
+
+                e.BuildAsm(ProgramMainNode);
+            }
+            else
+            {
+                foreach (var tree in Compilation.SyntaxTrees)
+                {
+                    var sm = Compilation.GetSemanticModel(tree);
+
+                    LibraryCompiler.CompileProject(tree, compilationContext, sm);
+                }
+
+                DumpMeta();
+                DumpLinker();
+            }
 
             return true;
         }
 
 
-        private async Task TryLoad()
+        ClassDeclarationSyntax? mcuConfigClassDeclaration = null;
+
+        private async Task TryLoadProject()
         {
-            ClassDeclarationSyntax? classDeclaration = null;
             INamedTypeSymbol? classSymbol;
             SemanticModel? classSemanticModel = null;
 
@@ -372,6 +411,7 @@ namespace NETMCUCompiler
                                         ProgramMainMethod = pmm;
                                         ProgramMainNode = pmn;
                                         ProgramMainType = symbol;
+                                        ProgramSemanticModel = semanticModel;
                                     }
                                 }
                             }
@@ -383,7 +423,7 @@ namespace NETMCUCompiler
                             if (classSemanticModel != null)
                                 throw new Exception("Multiple configuration classes found in project. Only one configuration class is allowed.");
 
-                            classDeclaration = classDecl;
+                            mcuConfigClassDeclaration = classDecl;
                             classSymbol = symbol;
                             classSemanticModel = semanticModel;
                             Console.WriteLine($"Найдена конфигурация: {symbol.Name} в файле {tree.FilePath}");
@@ -400,15 +440,16 @@ namespace NETMCUCompiler
                 Options = new BuildingOptions();
 
                 SemanticMethodExtractor e = new SemanticMethodExtractor();
-                var configureMethods = e.ExtractInvocations(classDeclaration, classSemanticModel).ToArray();
+                var configureMethods = e.ExtractInvocations(mcuConfigClassDeclaration, classSemanticModel).ToArray();
 
                 await LoadOptions(configureMethods, classSemanticModel);
             }
         }
 
+
         Dictionary<ProjectId, BuildingContext> referenceContexts = new Dictionary<ProjectId, BuildingContext>();
 
-        public void CollectProjectContexts(Microsoft.CodeAnalysis.Project project)
+        void CollectProjectContexts(Microsoft.CodeAnalysis.Project project)
         {
             var solution = project.Solution;
 
@@ -587,7 +628,7 @@ namespace NETMCUCompiler
                         var name = GetBaseValue<string>(_ma, item, "Name", "NameArg", out _);
                         var type = GetBaseValue<string>(_ma, item, "Type", "TypeArg", out _);
 
-                        var defaultValue = GetBaseValue<string>(_ma, item, "DefaultValue", "DefaultValueArg", out _);
+                        var defaultValue = GetBaseValue<string>(_ma, item, "DefaultValue", "DefaultValueArg", out _, true);
 
                         var required = GetBaseValue<bool>(_ma, item, "Required", "RequiredArg", out var reqEx, true);
 
@@ -687,8 +728,11 @@ namespace NETMCUCompiler
         }
 
 
-        public void DumpMeta(string outputPath)
+        void DumpMeta()
         {
+
+            var outputPath = System.IO.Path.Combine(mcuBinPath, "meta.netmcu");
+
             var meta = new
             {
                 CompilerOptions = new
@@ -698,13 +742,22 @@ namespace NETMCUCompiler
                     Options.Defines,
                     Options.Packages,
                     Options.InputConfigurations
-                },
-                // Данные для линковки
-                NativeImports = NativeRelocations,
-                // Карта экспорта (чтобы другие либы могли звать нас)
-                Exports = ExportMap
+                }
             };
 
+            string json = JsonSerializer.Serialize(meta, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(outputPath, json);
+        }
+
+        void DumpLinker()
+        {
+            var outputPath = System.IO.Path.Combine(mcuBinPath, "linker.netmcu");
+            var meta = new
+            {
+                OutputMethods = compilationLinker.OutputMethods.ToDictionary(x => x.Key, x => new { x.Value.position, x.Value.isStatic }),
+                compilationLinker.OutputTypes,
+                compilationLinker.InputMethods
+            };
             string json = JsonSerializer.Serialize(meta, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(outputPath, json);
         }
@@ -779,6 +832,7 @@ namespace NETMCUCompiler
 
         public CommonFileParametersModel Parameters { get; set; } = new();
     }
+
     public class CommonFileParametersModel
     {
 
@@ -786,5 +840,16 @@ namespace NETMCUCompiler
         public string[] RequiredValues { get; set; } = Array.Empty<string>();
 
         public Dictionary<string, string> DefaultValues { get; set; } = new();
+    }
+
+    public record LinkerRecord(CompilationContext context, int position, bool isStatic);
+
+    public class LinkerContext
+    {
+        public Dictionary<string, LinkerRecord> OutputMethods { get; } = new();
+
+        public Dictionary<string, TypeMetadata> OutputTypes { get; } = new();
+
+        public Dictionary<string, List<int>> InputMethods { get; } = new();
     }
 }

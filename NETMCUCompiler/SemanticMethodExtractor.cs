@@ -66,7 +66,9 @@ namespace NETMCUCompiler
                     // Работа с аргументами
                     foreach (var arg in invocation.ArgumentList.Arguments)
                     {
-                        _args2.Add(methodSymbol.Parameters[i].Name, arg.Expression);
+                        var nc = arg.NameColon?.Name.ToString();
+
+                        _args2.Add(nc ?? methodSymbol.Parameters[i].Name, arg.Expression);
 
                         ++i;
                         //Console.WriteLine($" - Argument: {arg.Expression}, Type: {argType?.ToDisplayString()}");

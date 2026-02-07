@@ -1,5 +1,8 @@
-﻿using Microsoft.CodeAnalysis.CSharp.Syntax;
+﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System.Reflection;
 using System.Text;
+using System.Xml.Linq;
 
 namespace NETMCUCompiler.CodeBuilder
 {
@@ -9,6 +12,14 @@ namespace NETMCUCompiler.CodeBuilder
         public MemoryStream Bin { get; } = new();
         public Dictionary<string, int> RegisterMap { get; } = new();
         public Dictionary<string, int> ConstantMap { get; } = new();
+
+        public ClassDeclarationSyntax MCUConfigClass { get; set; }
+
+        public required LinkerContext[] LinkerContexts { get; set; }
+
+        public required BuildingContext BuildingContext { get; init; }
+
+        public string BinaryPath { get; set; }
 
         public int LabelCount = 0;
 
@@ -45,20 +56,64 @@ namespace NETMCUCompiler.CodeBuilder
             throw new Exception($"Переменная {name} не объявлена");
         }
 
-        public Dictionary<string, int> ExportMap { get; } = new();
+        //public Dictionary<string, int> ExportMap { get; } = new();
 
-        public Dictionary<string, List<int>> NativeRelocations { get; } = new();
+        //public Dictionary<string, List<int>> NativeRelocations { get; } = new();
 
         public void AddRelocation(string name)
         {
-            if (!NativeRelocations.ContainsKey(name))
-                NativeRelocations[name] = new List<int>();
+            foreach (var c in LinkerContexts)
+            {
+                if (!c.InputMethods.ContainsKey(name))
+                    c.InputMethods[name] = new List<int>();
 
-            // Запоминаем текущую позицию в бинарном потоке
-            NativeRelocations[name].Add((int)Bin.Position);
+                // Запоминаем текущую позицию в бинарном потоке
+                c.InputMethods[name].Add((int)Bin.Position);
+            }
         }
 
-        public TypeManager TypeManager { get; } = new();
+        public void RegisterType(ClassDeclarationSyntax node, SemanticModel semanticModel)
+        {
+            if (LinkerContexts == null) return;
+
+            var meta = new TypeMetadata { Name = node.Identifier.Text, IsClass = true };
+            int currentOffset = 0;
+
+            foreach (var member in node.Members.OfType<FieldDeclarationSyntax>())
+            {
+                foreach (var variable in member.Declaration.Variables)
+                {
+                    meta.FieldOffsets[variable.Identifier.Text] = currentOffset;
+                    currentOffset += 4; // Пока считаем всё по 4 байта (int, uint, ptr)
+                }
+            }
+            meta.TotalSize = currentOffset;
+
+            foreach (var c in LinkerContexts)
+            {
+                if(c.OutputTypes.ContainsKey(meta.Name)) throw new Exception($"Дублирование имени {meta.Name}");
+                c.OutputTypes[meta.Name] = meta;
+            }
+        }
+
+        public void RegisterMethod(SemanticModel model, ClassDeclarationSyntax cls, MethodDeclarationSyntax method, bool isStatic)
+        {
+            var classSymbol = model.GetDeclaredSymbol(cls) as INamedTypeSymbol;
+            var methodSymbol = model.GetDeclaredSymbol(method) as IMethodSymbol;
+
+            // Полное имя: Namespace.ClassName.MethodName
+            string fullName = methodSymbol.ToDisplayString();
+
+            var position = (int)Bin.Position;
+            // Регистрируем точку входа в ExportMap
+            foreach (var c in LinkerContexts)
+            {
+                c.OutputMethods[fullName] = new LinkerRecord(this, position, isStatic) ;
+            }
+        }
+
+
+        //public TypeManager TypeManager { get; } = new();
     }
 
 

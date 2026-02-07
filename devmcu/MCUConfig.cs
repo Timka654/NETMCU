@@ -13,6 +13,12 @@ namespace devmcu
             //        new InputConfigurationErrorMessage(InputConfigurationErrorMessage.InvalidType, "test_invalid_type"),
             //        new InputConfigurationErrorMessage(InputConfigurationErrorMessage.RequiredValue, "test_required_value")]);
 
+            options.AddInputConfiguration("HAL_PATH", "string",
+                errors: [
+                    //new InputConfigurationErrorMessage(InputConfigurationErrorMessage.InvalidValue, "test_invalid_value"),
+                    //new InputConfigurationErrorMessage(InputConfigurationErrorMessage.InvalidType, "test_invalid_type"),
+                    new InputConfigurationErrorMessage(InputConfigurationErrorMessage.RequiredValue, "For continue - please set \"HAL_PATH\" configuration value")]);
+
             options.SetMCUType("STM32");
             options.SetMCU("cortex-m4");
             options.SetMemoryLayout(1024 * 256, 1024 * 64); // 256KB Flash, 64KB RAM
