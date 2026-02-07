@@ -13,7 +13,8 @@ namespace NETMCUCompiler.CodeBuilder
         public Dictionary<string, int> RegisterMap { get; } = new();
         public Dictionary<string, int> ConstantMap { get; } = new();
 
-        public ClassDeclarationSyntax MCUConfigClass { get; set; }
+        public ClassDeclarationSyntax[] ExceptClasses { get; set; } = [];
+        public MethodDeclarationSyntax[] ExceptMethods { get; set; } = [];
 
         public required LinkerContext[] LinkerContexts { get; set; }
 
@@ -56,19 +57,17 @@ namespace NETMCUCompiler.CodeBuilder
             throw new Exception($"Переменная {name} не объявлена");
         }
 
-        //public Dictionary<string, int> ExportMap { get; } = new();
-
-        //public Dictionary<string, List<int>> NativeRelocations { get; } = new();
-
-        public void AddRelocation(string name)
+        public void AddRelocation(string name, bool isStatic)
         {
+            var offset = (int)Bin.Position;
+
             foreach (var c in LinkerContexts)
             {
                 if (!c.InputMethods.ContainsKey(name))
-                    c.InputMethods[name] = new List<int>();
+                    c.InputMethods[name] = new ();
 
                 // Запоминаем текущую позицию в бинарном потоке
-                c.InputMethods[name].Add((int)Bin.Position);
+                c.InputMethods[name].Add(new RelocationRecord(this, offset, isStatic));
             }
         }
 
@@ -76,7 +75,11 @@ namespace NETMCUCompiler.CodeBuilder
         {
             if (LinkerContexts == null) return;
 
-            var meta = new TypeMetadata { Name = node.Identifier.Text, IsClass = true };
+            var classSymbol = semanticModel.GetDeclaredSymbol(node) as INamedTypeSymbol;
+
+            var className = classSymbol.ToDisplayString();
+
+            var meta = new TypeMetadata { Name = className, IsClass = true };
             int currentOffset = 0;
 
             foreach (var member in node.Members.OfType<FieldDeclarationSyntax>())
@@ -111,9 +114,6 @@ namespace NETMCUCompiler.CodeBuilder
                 c.OutputMethods[fullName] = new LinkerRecord(this, position, isStatic) ;
             }
         }
-
-
-        //public TypeManager TypeManager { get; } = new();
     }
 
 
@@ -124,29 +124,5 @@ namespace NETMCUCompiler.CodeBuilder
         public int TotalSize { get; set; }
         public Dictionary<string, int> FieldOffsets { get; } = new();
         public bool IsClass { get; set; } // true - куча, false - стек (struct)
-    }
-
-    public class TypeManager
-    {
-        private readonly Dictionary<string, TypeMetadata> _types = new();
-
-        public void RegisterType(ClassDeclarationSyntax node)
-        {
-            var meta = new TypeMetadata { Name = node.Identifier.Text, IsClass = true };
-            int currentOffset = 0;
-
-            foreach (var member in node.Members.OfType<FieldDeclarationSyntax>())
-            {
-                foreach (var variable in member.Declaration.Variables)
-                {
-                    meta.FieldOffsets[variable.Identifier.Text] = currentOffset;
-                    currentOffset += 4; // Пока считаем всё по 4 байта (int, uint, ptr)
-                }
-            }
-            meta.TotalSize = currentOffset;
-            _types[meta.Name] = meta;
-        }
-
-        public TypeMetadata GetType(string name) => _types.TryGetValue(name, out var m) ? m : null;
     }
 }

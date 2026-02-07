@@ -37,6 +37,7 @@ namespace NETMCUCompiler
         public INamedTypeSymbol? ProgramMainType { get; private set; }
         public IMethodSymbol? ProgramMainMethod { get; private set; }
         public MethodDeclarationSyntax? ProgramMainNode { get; private set; }
+        public ClassDeclarationSyntax? ProgramMainTypeNode { get; private set; }
         public SemanticModel? ProgramSemanticModel { get; private set; }
 
 
@@ -232,61 +233,63 @@ namespace NETMCUCompiler
         {
             var bo = Options;
 
-            if (!needsRebuildCore) return true;
-
-            Directory.Delete(mcuObjCorePath, true);
-            Directory.CreateDirectory(mcuObjCorePath);
-
-            DirectoryCopy(mcuCorePath, mcuObjCorePath, true, "(?<!\\.netmcu)$");
-
-            File.WriteAllText(tempDockerfilePath, dockerContent);
-
-            Regex parameterProcessing = new Regex($"%#(\\S+)#%");
-
-            foreach (var path in commonData.Parameters.ProcessingPathes)
+            if (needsRebuildCore)
             {
-                var files = Directory.GetFiles(mcuObjCorePath, path);
+                Directory.Delete(mcuObjCorePath, true);
+                Directory.CreateDirectory(mcuObjCorePath);
 
-                foreach (var file in files)
+                DirectoryCopy(mcuCorePath, mcuObjCorePath, true, "(?<!\\.netmcu)$");
+
+                File.WriteAllText(tempDockerfilePath, dockerContent);
+
+                Regex parameterProcessing = new Regex($"%#(\\S+)#%");
+
+                foreach (var path in commonData.Parameters.ProcessingPathes)
                 {
-                    var content = File.ReadAllText(file);
-                    var newContent = parameterProcessing.Replace(content, match =>
+                    var files = Directory.GetFiles(mcuObjCorePath, path);
+
+                    foreach (var file in files)
                     {
-                        var key = match.Value.Substring(2, match.Value.Length - 4).Trim();
-                        if (bo.Configurations.TryGetValue(key, out var value))
-                            return value;
-                        else
-                            return match.Value; // Оставляем без изменений, если не найдено
-                    });
-                    File.WriteAllText(file, newContent);
+                        var content = File.ReadAllText(file);
+                        var newContent = parameterProcessing.Replace(content, match =>
+                        {
+                            var key = match.Value.Substring(2, match.Value.Length - 4).Trim();
+                            if (bo.Configurations.TryGetValue(key, out var value))
+                                return value;
+                            else
+                                return match.Value; // Оставляем без изменений, если не найдено
+                        });
+                        File.WriteAllText(file, newContent);
+                    }
+
                 }
 
+                // Собираем образ с тегом 'final-mcu' из сгенерированного Dockerfile
+                var buildArgs = $"build -t final-mcu -f \"{tempDockerfilePath}\" \"{mcuObjCorePath}\"";
+                var buildProcess = Process.Start("docker", buildArgs);
+                buildProcess.WaitForExit();
+
+                if (buildProcess.ExitCode != 0)
+                {
+                    throw new Exception("Failed to build Docker image 'final-mcu'. Check your Dockerfile.");
+                }
+
+                Console.WriteLine("Building Core...");
+
+                var coreBuildCmd = $"run --rm -v \"{mcuObjCorePath}:/project\" final-mcu";
+                // Запуск (исправил кавычки для безопасности в shell)
+                var process = Process.Start("docker", coreBuildCmd);
+
+                process.WaitForExit();
+
+                if (process.ExitCode != 0)
+                    throw new Exception("Failed to build MCU core inside Docker container.");
+
+                File.Copy(commonCorePath, commonOldPath, true);
+
+                Console.WriteLine($"Ядро собрано.");
             }
 
-            // Собираем образ с тегом 'final-mcu' из сгенерированного Dockerfile
-            var buildArgs = $"build -t final-mcu -f \"{tempDockerfilePath}\" \"{mcuObjCorePath}\"";
-            var buildProcess = Process.Start("docker", buildArgs);
-            buildProcess.WaitForExit();
-
-            if (buildProcess.ExitCode != 0)
-            {
-                throw new Exception("Failed to build Docker image 'final-mcu'. Check your Dockerfile.");
-            }
-
-            Console.WriteLine("Building Core...");
-
-            var coreBuildCmd = $"run --rm -v \"{mcuObjCorePath}:/project\" final-mcu";
-            // Запуск (исправил кавычки для безопасности в shell)
-            var process = Process.Start("docker", coreBuildCmd);
-
-            process.WaitForExit();
-
-            if (process.ExitCode != 0)
-                throw new Exception("Failed to build MCU core inside Docker container.");
-
-            File.Copy(commonCorePath, commonOldPath, true);
-
-            Console.WriteLine($"Ядро собрано.");
 
             // После сборки парсим результат
             CoreSymbols = Stm32MapParser.ParseSymbols(System.IO.Path.Combine(buildDir, "kernel.map"));
@@ -315,14 +318,15 @@ namespace NETMCUCompiler
                     throw new Exception($"Failed to compile referenced project: {reference.Value.Path}");
             }
 
-            var buildLinkers = new List<LinkerContext>() { compilationLinker};
+            var buildLinkers = new List<LinkerContext>() { compilationLinker };
 
             if (linker != null && linker != compilationLinker)
                 buildLinkers.Add(linker);
 
             compilationContext = new CompilationContext()
             {
-                MCUConfigClass = mcuConfigClassDeclaration,
+                ExceptClasses = [mcuConfigClassDeclaration],
+                ExceptMethods = [ProgramMainNode],
                 BinaryPath = System.IO.Path.Combine(mcuBinPath, "output.bin"),
                 LinkerContexts = buildLinkers.ToArray(),
                 BuildingContext = this
@@ -334,20 +338,102 @@ namespace NETMCUCompiler
 
                 e.BuildAsm(ProgramMainNode);
             }
-            else
+
+            foreach (var tree in Compilation.SyntaxTrees)
             {
-                foreach (var tree in Compilation.SyntaxTrees)
-                {
-                    var sm = Compilation.GetSemanticModel(tree);
+                var sm = Compilation.GetSemanticModel(tree);
 
-                    LibraryCompiler.CompileProject(tree, compilationContext, sm);
-                }
-
-                DumpMeta();
-                DumpLinker();
+                LibraryCompiler.CompileProject(tree, compilationContext, sm);
             }
 
+
+
+            DumpMeta();
+            DumpLinker();
+
+            if (type == BuildingOutputType.Executable)
+                DumpApplication();
+            else
+                DumpLibrary();
+
             return true;
+        }
+
+        IEnumerable<BuildingContext> CollectReferences()
+        {
+            foreach (var item in referenceContexts.Select(x => x.Value))
+            {
+                yield return item;
+            }
+
+            foreach (var item in referenceContexts.SelectMany(x => x.Value.CollectReferences()))
+            {
+                yield return item;
+            }
+
+        }
+
+        byte[] BuildImage()
+        {
+            // Список для хранения финального бинарника
+            List<byte> finalImage = new List<byte>();
+            // Карта смещений: Контекст -> Смещение в итоговом файле
+            Dictionary<CompilationContext, int> contextOffsets = new();
+
+            foreach (var ctx in CollectReferences())
+            {
+                contextOffsets[ctx.compilationContext] = finalImage.Count;
+                finalImage.AddRange(ctx.compilationContext.Bin.ToArray());
+            }
+
+            byte[] binary = finalImage.ToArray();
+
+            uint userCodeAddr = 0;
+            var sa = Options.Configurations["STARTUP_ADDRESS"];
+
+            if (sa.StartsWith("0x"))
+                userCodeAddr = uint.Parse(sa.TrimStart("0x"), System.Globalization.NumberStyles.HexNumber);
+            else
+                userCodeAddr = uint.Parse(sa);
+
+            Dictionary<string, uint> globalSymbolTable = new();
+
+            // 1. Добавляем символы ядра (из kernel.map)
+            foreach (var coreSym in CoreSymbols)
+                globalSymbolTable[coreSym.Key] = (uint)coreSym.Value;
+
+            // 2. Добавляем методы наших библиотек
+            foreach (var method in compilationLinker.OutputMethods)
+            {
+                int libOffset = contextOffsets[method.Value.context];
+                uint absoluteAddr = (uint)(userCodeAddr + libOffset + method.Value.position);
+                globalSymbolTable[method.Key] = absoluteAddr;
+            }
+            // Проходим по всем релокациям (импортам методов)
+            foreach (var inputGroup in compilationLinker.InputMethods)
+            {
+                string methodName = inputGroup.Key;
+
+                // Ищем адрес цели в глобальной таблице символов
+                if (!globalSymbolTable.TryGetValue(methodName, out uint targetAddr))
+                    throw new Exception($"Undefined reference: {methodName}");
+
+                foreach (var rel in inputGroup.Value)
+                {
+                    // 1. Находим, где в итоговом массиве лежит инструкция BL
+                    int instrGlobalOffset = contextOffsets[rel.Context] + rel.Offset;
+                    uint instrAddr = (uint)(userCodeAddr + instrGlobalOffset);
+
+                    // 2. Считаем дистанцию (Target - (PC + 4))
+                    int jumpOffset = (int)(targetAddr - (instrAddr + 4));
+
+                    // 3. ПАТЧИМ: передаем массив, позицию и дистанцию
+                    // binary — это твой finalImage.ToArray()
+                    ASMInstructions.PatchThumb2BL(binary, instrGlobalOffset, jumpOffset);
+                }
+            }
+
+            return binary;
         }
 
 
@@ -411,6 +497,7 @@ namespace NETMCUCompiler
                                         ProgramMainMethod = pmm;
                                         ProgramMainNode = pmn;
                                         ProgramMainType = symbol;
+                                        ProgramMainTypeNode = classDecl;
                                         ProgramSemanticModel = semanticModel;
                                     }
                                 }
@@ -756,10 +843,21 @@ namespace NETMCUCompiler
             {
                 OutputMethods = compilationLinker.OutputMethods.ToDictionary(x => x.Key, x => new { x.Value.position, x.Value.isStatic }),
                 compilationLinker.OutputTypes,
-                compilationLinker.InputMethods
+                InputMethods = compilationLinker.InputMethods.ToDictionary(x => x.Key, x => x.Value.Select(x => x.Offset))
             };
             string json = JsonSerializer.Serialize(meta, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(outputPath, json);
+        }
+
+        void DumpLibrary()
+            => DumpBinary(compilationContext.Bin.ToArray());
+        void DumpApplication()
+            => DumpBinary(BuildImage());
+
+        void DumpBinary(byte[] data)
+        {
+            var outputPath = compilationContext.BinaryPath;
+            File.WriteAllBytes(outputPath, data);
         }
 
 
@@ -841,7 +939,7 @@ namespace NETMCUCompiler
 
         public Dictionary<string, string> DefaultValues { get; set; } = new();
     }
-
+    public record RelocationRecord(CompilationContext Context, int Offset, bool isStatic);
     public record LinkerRecord(CompilationContext context, int position, bool isStatic);
 
     public class LinkerContext
@@ -850,6 +948,6 @@ namespace NETMCUCompiler
 
         public Dictionary<string, TypeMetadata> OutputTypes { get; } = new();
 
-        public Dictionary<string, List<int>> InputMethods { get; } = new();
+        public Dictionary<string, List<RelocationRecord>> InputMethods { get; } = new();
     }
 }

@@ -180,7 +180,7 @@ namespace NETMCUCompiler.CodeBuilder
 
         public override void VisitClassDeclaration(ClassDeclarationSyntax node)
         {
-            if (context.MCUConfigClass == node) return;
+            if (context.ExceptClasses.Contains(node)) return;
             base.VisitClassDeclaration(node);
         }
 
@@ -238,43 +238,52 @@ namespace NETMCUCompiler.CodeBuilder
         }
 
         public override void VisitInvocationExpression(InvocationExpressionSyntax node)
-        {
-            // 1. Получаем символ метода через семантическую модель
+        {// 1. Получаем символ метода через семантическую модель (уже есть в твоем коде)
             var methodSymbol = semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
-            if (methodSymbol == null) throw new Exception("Symbol not found");
+            if (methodSymbol == null) throw new Exception($"Символ не найден для: {node}");
 
             var args = node.ArgumentList.Arguments;
             int regOffset = 0;
 
-            // 2. Если метод не статический, грузим 'this' в r0
+            // 2. Логика 'this' (указатель на объект)
             if (!methodSymbol.IsStatic)
             {
-                // Вычисляем объект (например, в 'myObj.Method()', это 'myObj')
+                // Если это вызов типа myObj.Set(), вычисляем myObj в r0
                 if (node.Expression is MemberAccessExpressionSyntax memberAccess)
+                {
                     ASMInstructions.EmitExpression(memberAccess.Expression, 0, context);
+                }
                 else
-                    context.Emit("MOV r0, r4"); // Если просто Method(), значит это this (лежит в r4)
-
-                regOffset = 1;
+                {
+                    // Если просто Set(), значит работаем с текущим объектом (r4)
+                    context.Emit("MOV r0, r4");
+                }
+                regOffset = 1; // Все остальные аргументы сдвигаются на r1, r2, r3
             }
 
-            // 3. Загружаем остальные аргументы в r(regOffset)...r3
-            for (int i = 0; i < args.Count && (i + regOffset) < 4; i++)
+            // 3. Загружаем аргументы (r0-r3 согласно AAPCS)
+            for (int i = 0; i < args.Count; i++)
             {
-                ASMInstructions.EmitExpression(args[i].Expression, i + regOffset, context);
+                int targetReg = i + regOffset;
+                if (targetReg > 3)
+                    throw new Exception("Поддерживается максимум 4 аргумента (включая this)");
+
+                ASMInstructions.EmitExpression(args[i].Expression, targetReg, context);
             }
 
-            // 4. Проверяем на нативность
-            var nativeAttribute = methodSymbol
-                .GetAttributes()
+            // 4. Проверка на NativeCall
+            var nativeAttr = methodSymbol.GetAttributes()
                 .FirstOrDefault(a => a.AttributeClass.Name.Contains("NativeCall"));
 
-            // 5. Генерируем вызов по полному имени для линковщика
-            string fullName = methodSymbol.ToDisplayString();
-            ASMInstructions.EmitCall(fullName, context, (string?)nativeAttribute?.ConstructorArguments.First().Value);
+            // Если есть атрибут, берем имя функции в Си из него, иначе используем FullName метода
+            string nativeFunctionName = nativeAttr?.ConstructorArguments.FirstOrDefault().Value?.ToString();
+            string callTarget = nativeFunctionName ?? methodSymbol.ToDisplayString();
 
-            // ВАЖНО: не вызываем base.VisitInvocationExpression, 
-            // так как мы уже вручную посетили все аргументы через EmitExpression
+            // 5. Генерируем BL
+            ASMInstructions.EmitCall(callTarget, context, methodSymbol.IsStatic);
+
+            // Если метод что-то возвращает, результат в r0. 
+            // Нам нужно пометить, что r0 теперь занят результатом (для будущих присваиваний)
         }
 
     }
@@ -288,7 +297,7 @@ namespace NETMCUCompiler.CodeBuilder
             var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
             foreach (var @class in classes)
             {
-                if (@class == context.MCUConfigClass) continue;
+                if (context.ExceptClasses.Contains(@class)) continue;
 
                 context.RegisterType(@class, model);
             }
@@ -296,7 +305,7 @@ namespace NETMCUCompiler.CodeBuilder
             // 2. Компилируем методы
             foreach (var @class in classes)
             {
-                if (@class == context.MCUConfigClass) continue;
+                if (context.ExceptClasses.Contains(@class)) continue;
 
                 foreach (var method in @class.Members.OfType<MethodDeclarationSyntax>())
                 {

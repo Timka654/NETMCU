@@ -531,20 +531,18 @@ namespace NETMCUCompiler.CodeBuilder
                 throw new Exception("Неподдерживаемый тип константы");
             }
         }
-        public static void EmitCall(string methodName, CompilationContext context, string? nativeCallName = null)
+        public static void EmitCall(string methodName, CompilationContext context, bool isStatic)
         {
             context.Emit($"BL {methodName}");
 
-            if (nativeCallName != null)
-            {
-                context.AddRelocation(nativeCallName);
-            }
+            context.AddRelocation(methodName, isStatic);
 
             // Пишем 4 байта заглушки (0x00F0 0x00F8). 
             // Линковщик найдет их по оффсету из NativeRelocations и заменит на реальный оффсет.
             context.Write16(0xF000);
             context.Write16(0xF800);
         }
+
         public static void EmitMethodPrologue(bool isInstance, CompilationContext context)
         {
             // Сохраняем регистры. r4 будет нашим "this" внутри функции.
@@ -582,23 +580,6 @@ namespace NETMCUCompiler.CodeBuilder
             }
             // ... остальная логика тела ...
         }
-        //public static void EmitFieldAccess(MemberAccessExpressionSyntax node, int targetReg, CompilationContext context)
-        //{
-        //    // 1. Получаем базу (например, 'this' из r4 или переменную из другого регистра)
-        //    string baseName = node.Expression.ToString();
-        //    int baseReg = (baseName == "this") ? 4 : context.RegisterMap[baseName];
-
-        //    // 2. Ищем оффсет поля в метаданных типа
-        //    // (Тут нам нужно знать тип переменной baseName, добавим это в контекст позже)
-        //    int offset = GetFieldOffset(baseName, node.Name.Identifier.Text);
-
-        //    // 3. Генерируем LDR targetReg, [baseReg, #offset]
-        //    context.Emit($"LDR r{targetReg}, [r{baseReg}, #{offset}]");
-
-        //    // Опкод LDR (Rd, [Rn, #imm]): 0x6800 | (imm5 << 6) | (Rn << 3) | Rd
-        //    ushort opcode = (ushort)(0x6800 | ((offset / 4) << 6) | (baseReg << 3) | targetReg);
-        //    context.Write16(opcode);
-        //}
 
         public static bool TryGetAsConstant(ExpressionSyntax expr, CompilationContext context, out int value)
         {
@@ -612,6 +593,32 @@ namespace NETMCUCompiler.CodeBuilder
                 return true;
 
             return false;
+        }
+        public static void PatchThumb2BL(byte[] binary, int offset, int jumpOffset)
+        {
+            // jumpOffset — это разница в байтах. BL прыгает по полусловам (halfwords).
+            int val = jumpOffset >> 1;
+
+            int sign = (val >> 23) & 1;
+            int j1 = (val >> 22) & 1;
+            int j2 = (val >> 21) & 1;
+            int imm10 = (val >> 11) & 0x3FF;
+            int imm11 = val & 0x7FF;
+
+            // Вычисляем биты I1 и I2 (инвертированные J через знак)
+            int i1 = (j1 ^ sign) ^ 1;
+            int i2 = (j2 ^ sign) ^ 1;
+
+            // Первое полуслово: 1111 0 S imm10
+            ushort high = (ushort)(0xF000 | (sign << 10) | imm10);
+            // Второе полуслово: 11 0 1 I1 I2 imm11 (0xD... - это BL)
+            ushort low = (ushort)(0xD000 | (i1 << 13) | (i2 << 11) | imm11);
+
+            // Записываем в Little-Endian
+            binary[offset] = (byte)(high & 0xFF);
+            binary[offset + 1] = (byte)(high >> 8);
+            binary[offset + 2] = (byte)(low & 0xFF);
+            binary[offset + 3] = (byte)(low >> 8);
         }
     }
 }
