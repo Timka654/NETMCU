@@ -2,6 +2,7 @@
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System;
+using System.Net;
 using System.Text;
 
 namespace NETMCUCompiler.CodeBuilder
@@ -32,9 +33,9 @@ namespace NETMCUCompiler.CodeBuilder
             else if (node.Right is IdentifierNameSyntax id)
             {
                 // 1. Проверяем, константа ли это (d1, Program.d2)
-                if (TryGetAsConstant(id, context, out int constVal))
+                if (TryGetAsConstant(id, context, out object constVal))
                 {
-                    EmitMovImmediate(rightTemp, constVal, context); // Грузим константу в r(rightTemp)
+                    EmitMovImmediate(rightTemp, (int)constVal, context); // Грузим константу в r(rightTemp)
                     EmitArithmeticOp(node.Kind(), targetReg, leftReg, rightTemp, context);
                 }
                 // 2. Если это переменная (a, b...)
@@ -55,9 +56,9 @@ namespace NETMCUCompiler.CodeBuilder
         {
             if (expr is IdentifierNameSyntax id && context.RegisterMap.TryGetValue(id.Identifier.Text, out int reg)) return reg;
 
-            if (TryGetAsConstant(expr, context, out int val))
+            if (TryGetAsConstant(expr, context, out object val))
             {
-                EmitMovImmediate(tempOffset, val, context);
+                EmitMovImmediate(tempOffset, (int)val, context);
                 return tempOffset;
             }
 
@@ -250,12 +251,31 @@ namespace NETMCUCompiler.CodeBuilder
                     return;
                 }
 
+
+                int rightVal = 0;
+                string rightStr = bin.Right.ToString().Trim();
+
+                // 1. Пытаемся понять, что справа: число или константа/enum
+                if (bin.Right is LiteralExpressionSyntax literal)
+                {
+                    rightVal = ASMInstructions.ParseLiteral(literal);
+                }
+                else if (context.TryGetConstant(bin.Right, out var constVal))
+                {
+                    rightVal = (int)Convert.ToInt32(constVal);
+                }
+                else if (!int.TryParse(rightStr, out rightVal))
+                {
+                    // Если это не число и не константа, возможно это переменная?
+                    // Тогда нужно генерировать CMP R, R, но пока просто кинем ошибку
+                    throw new Exception($"Не удалось разрешить значение правой части: {rightStr}");
+                }
+
                 // Базовое сравнение (a == 11)
                 var leftId = bin.Left as IdentifierNameSyntax;
                 if (leftId != null)
                 {
                     int leftReg = context.GetVarRegister(leftId.Identifier.Text);
-                    int rightVal = int.Parse(bin.Right.ToString());
 
                     EmitCompareImmediate(leftReg, rightVal, context);
 
@@ -581,15 +601,15 @@ namespace NETMCUCompiler.CodeBuilder
             // ... остальная логика тела ...
         }
 
-        public static bool TryGetAsConstant(ExpressionSyntax expr, CompilationContext context, out int value)
+        public static bool TryGetAsConstant(ExpressionSyntax expr, CompilationContext context, out object value)
         {
             value = 0;
             if (expr is LiteralExpressionSyntax literal) { value = ParseLiteral(literal); return true; }
 
-            if (expr is IdentifierNameSyntax id && context.ConstantMap.TryGetValue(id.Identifier.Text, out value))
+            if (expr is IdentifierNameSyntax id && context.TryGetConstant(context.SemanticModel.GetSymbolInfo(expr).Symbol.ToDisplayString(), out value))
                 return true;
 
-            if (expr is MemberAccessExpressionSyntax ma && context.ConstantMap.TryGetValue(ma.Name.Identifier.Text, out value))
+            if (expr is MemberAccessExpressionSyntax ma && context.TryGetConstant(context.SemanticModel.GetSymbolInfo(expr).Symbol.ToDisplayString(), out value))
                 return true;
 
             return false;
@@ -619,6 +639,30 @@ namespace NETMCUCompiler.CodeBuilder
             binary[offset + 1] = (byte)(high >> 8);
             binary[offset + 2] = (byte)(low & 0xFF);
             binary[offset + 3] = (byte)(low >> 8);
+        }
+
+        public static int GetOperand(ExpressionSyntax expr, CompilationContext ctx, int targetReg)
+        {
+            var symbol = ctx.SemanticModel.GetSymbolInfo(expr).Symbol;
+
+            // 1. Это константа?
+            if (ctx.TryGetConstant(symbol?.ToDisplayString(), out var val))
+            {
+                EmitMovImmediate(targetReg, (int)val, ctx);
+                return targetReg;
+            }
+
+            // 2. Это локальная переменная?
+            if (ctx.RegisterMap.TryGetValue(expr.ToString(), out int reg)) return reg;
+
+            // 3. Это структура на стеке?
+            if (ctx.StackMap.TryGetValue(expr.ToString(), out var stackVar))
+            {
+                ctx.Emit($"LDR R{targetReg}, [SP, #{stackVar.StackOffset}]");
+                return targetReg;
+            }
+
+            throw new Exception($"Не удалось разрешить операнд: {expr}");
         }
     }
 }

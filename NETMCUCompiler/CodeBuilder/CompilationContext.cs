@@ -1,5 +1,6 @@
 ﻿using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Newtonsoft.Json.Linq;
 using System.Reflection;
 using System.Text;
 using System.Xml.Linq;
@@ -14,14 +15,69 @@ namespace NETMCUCompiler.CodeBuilder
         public int StackOffset { get; set; } // Смещение от SP (указателя стека)
     }
 
+    public class MethodCompilationContext(CompilationContext compilationContext)
+    { 
+        public required MethodDeclarationSyntax MethodSyntax { get; set; }
+
+        public required string Name { get; set; }
+
+    }
+
     public class CompilationContext
     {
         public StringBuilder Asm { get; } = new();
         public MemoryStream Bin { get; } = new();
         public Dictionary<string, int> RegisterMap { get; } = new();
-        public Dictionary<string, int> ConstantMap { get; } = new();
 
-        public TypeDeclarationSyntax[] ExceptClasses { get; set; } = [];
+        public required SemanticModel SemanticModel { get; set; }
+
+        private Dictionary<string, object> ConstantMap { get; } = new();
+
+        public void RegisterConstant(string name, object value, bool isPublic)
+        {
+            if (isPublic)
+            {
+                foreach (var item in this.LinkerContexts)
+                {
+                    item.Constants[name] = value;
+                }
+                //PublicConstantMap[name] = value;
+                return;
+            }
+            ConstantMap[name] = value;
+        }
+
+        public void ClearConstants(bool @public = false)
+        {
+            //if (@public)
+            //{
+            //    PublicConstantMap.Clear();
+            //    return;
+            //}
+            ConstantMap.Clear();
+        }
+
+        public bool TryGetConstant(string name, out object value)
+        {
+            if (ConstantMap.TryGetValue(name, out value)) return true;
+            foreach (var item in this.LinkerContexts)
+            {
+                if (item.Constants.TryGetValue(name, out value)) return true;
+            }
+
+            return false;
+        }
+
+        public bool TryGetConstant(ExpressionSyntax syntax, out object value)
+        {
+            var t = SemanticModel.GetSymbolInfo(syntax);
+
+            if (TryGetConstant(t.Symbol.ToDisplayString(), out value)) return true;
+
+            return false;
+        }
+
+        public TypeDeclarationSyntax[] ExceptTypes { get; set; } = [];
 
         public MethodDeclarationSyntax[] ExceptMethods { get; set; } = [];
 
@@ -76,22 +132,18 @@ namespace NETMCUCompiler.CodeBuilder
             foreach (var c in LinkerContexts)
             {
                 if (!c.InputMethods.ContainsKey(name))
-                    c.InputMethods[name] = new ();
+                    c.InputMethods[name] = new();
 
                 // Запоминаем текущую позицию в бинарном потоке
                 c.InputMethods[name].Add(new RelocationRecord(this, offset, isStatic));
             }
         }
 
-        public void RegisterType(TypeDeclarationSyntax node, SemanticModel semanticModel)
+        public void RegisterType(string name, TypeDeclarationSyntax node)
         {
             if (LinkerContexts == null) return;
 
-            var classSymbol = semanticModel.GetDeclaredSymbol(node) as INamedTypeSymbol;
-
-            var className = classSymbol.ToDisplayString();
-
-            var meta = new TypeMetadata { Name = className, IsClass = true };
+            var meta = new TypeMetadata { Name = name, IsClass = true };
             int currentOffset = 0;
 
             foreach (var member in node.Members.OfType<FieldDeclarationSyntax>())
@@ -106,24 +158,18 @@ namespace NETMCUCompiler.CodeBuilder
 
             foreach (var c in LinkerContexts)
             {
-                if(c.OutputTypes.ContainsKey(meta.Name)) throw new Exception($"Дублирование имени {meta.Name}");
+                if (c.OutputTypes.ContainsKey(meta.Name)) throw new Exception($"Дублирование имени {meta.Name}");
                 c.OutputTypes[meta.Name] = meta;
             }
         }
 
-        public void RegisterMethod(SemanticModel model, TypeDeclarationSyntax cls, MethodDeclarationSyntax method, bool isStatic)
+        public void RegisterMethod(string method, bool isStatic)
         {
-            var classSymbol = model.GetDeclaredSymbol(cls) as INamedTypeSymbol;
-            var methodSymbol = model.GetDeclaredSymbol(method) as IMethodSymbol;
-
-            // Полное имя: Namespace.ClassName.MethodName
-            string fullName = methodSymbol.ToDisplayString();
-
             var position = (int)Bin.Position;
             // Регистрируем точку входа в ExportMap
             foreach (var c in LinkerContexts)
             {
-                c.OutputMethods[fullName] = new LinkerRecord(this, position, isStatic) ;
+                c.OutputMethods[method] = new LinkerRecord(this, position, isStatic);
             }
         }
 

@@ -12,13 +12,13 @@ namespace devmcu
             HAL.Init();
 
 
-            //var t = GPIO_Port.PortC;
+            var t = GPIO_Port.PortC;
 
-            //if (t == GPIO_Port.PortC)
-            //{
-            //    GPIO.SetMode(GPIO_Port.PortC, LED_PIN, GPIO_Mode.OutputPushPull);
+            if (t == GPIO_Port.PortC)
+            {
+                GPIO.SetMode(GPIO_Port.PortC, LED_PIN, GPIO_Mode.OutputPushPull);
 
-            //}
+            }
 
             // 1. Включаем тактирование порта C
             GPIO.EnableClock(GPIO_Port.PortC);

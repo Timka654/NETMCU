@@ -45,6 +45,7 @@ namespace NETMCUCore.STM
         }
         public static void SetMode(GPIO_Port port, int pin, GPIO_Mode mode, GPIO_Pull pull = GPIO_Pull.NoPull, GPIO_Speed speed = GPIO_Speed.VeryHigh, uint alternate = 0)
         {
+            const int abssss = 1;
             uint portAddr = GetPortAddress(port);
 
             var config = new GPIO_InitTypeDef(); 

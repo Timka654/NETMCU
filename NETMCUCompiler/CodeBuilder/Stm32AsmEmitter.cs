@@ -2,48 +2,48 @@
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System;
-using System.Reflection;
+using System.Security.Claims;
 
 namespace NETMCUCompiler.CodeBuilder
 {
-    public class Stm32MethodBuilder(CompilationContext context, SemanticModel semanticModel) : CSharpSyntaxWalker
+    public class Stm32MethodBuilder(CompilationContext context) : CSharpSyntaxWalker
     {
-        public void BuildAsm(MethodDeclarationSyntax tree)
-        {
-            var classNode = tree.FirstAncestorOrSelf<ClassDeclarationSyntax>();
-            if (classNode != null)
-            {
-                foreach (var member in classNode.Members)
-                {
-                    if (member is FieldDeclarationSyntax field && field.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword)))
-                    {
-                        foreach (var variable in field.Declaration.Variables)
-                        {
-                            if (variable.Initializer?.Value is LiteralExpressionSyntax literal)
-                            {
-                                int val = ASMInstructions.ParseLiteral(literal);
-                                string name = variable.Identifier.Text;
-                                context.ConstantMap[name] = val; // Просто d2
-                                context.ConstantMap[$"{classNode.Identifier.Text}.{name}"] = val; // Program.d2
-                            }
-                        }
-                    }
-                }
-            }
+        //public void BuildAsm(MethodDeclarationSyntax tree)
+        //{
+        //    var classNode = tree.FirstAncestorOrSelf<ClassDeclarationSyntax>();
+        //    if (classNode != null)
+        //    {
+        //        foreach (var member in classNode.Members)
+        //        {
+        //            if (member is FieldDeclarationSyntax field && field.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword)))
+        //            {
+        //                foreach (var variable in field.Declaration.Variables)
+        //                {
+        //                    if (variable.Initializer?.Value is LiteralExpressionSyntax literal)
+        //                    {
+        //                        int val = ASMInstructions.ParseLiteral(literal);
+        //                        string name = variable.Identifier.Text;
+        //                        context.ConstantMap[name] = val; // Просто d2
+        //                        context.ConstantMap[$"{classNode.Identifier.Text}.{name}"] = val; // Program.d2
+        //                    }
+        //                }
+        //            }
+        //        }
+        //    }
 
-            // Сканируем константы внутри метода (например, d2)
-            foreach (var localConst in tree.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
-                        .Where(s => s.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword))))
-            {
-                foreach (var v in localConst.Declaration.Variables)
-                {
-                    if (v.Initializer?.Value is LiteralExpressionSyntax lit)
-                        context.ConstantMap[v.Identifier.Text] = ASMInstructions.ParseLiteral(lit);
-                }
-            }
+        //    // Сканируем константы внутри метода (например, d2)
+        //    foreach (var localConst in tree.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
+        //                .Where(s => s.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword))))
+        //    {
+        //        foreach (var v in localConst.Declaration.Variables)
+        //        {
+        //            if (v.Initializer?.Value is LiteralExpressionSyntax lit)
+        //                context.ConstantMap[v.Identifier.Text] = ASMInstructions.ParseLiteral(lit);
+        //        }
+        //    }
 
-            ASMInstructions.EmitFunctionFrame(tree, context, () => Visit(tree));
-        }
+        //    ASMInstructions.EmitFunctionFrame(tree, context, () => Visit(tree));
+        //}
         public override void VisitLocalDeclarationStatement(LocalDeclarationStatementSyntax node)
         {
             foreach (var variable in node.Declaration.Variables)
@@ -235,7 +235,7 @@ namespace NETMCUCompiler.CodeBuilder
         public override void VisitAssignmentExpression(AssignmentExpressionSyntax node)
         {
             // 1. Не берем LastUsedRegister, а определяем, КУДА мы хотим получить результат.
-         // Для правой части идеально подходит R0 (стандарт ARM для возврата и параметров).
+            // Для правой части идеально подходит R0 (стандарт ARM для возврата и параметров).
             int valueReg = 0;
 
             // 2. Генерируем код для вычисления правой части прямо в R0.
@@ -304,7 +304,7 @@ namespace NETMCUCompiler.CodeBuilder
 
         public override void VisitClassDeclaration(ClassDeclarationSyntax node)
         {
-            if (context.ExceptClasses.Contains(node)) return;
+            if (context.ExceptTypes.Contains(node)) return;
             base.VisitClassDeclaration(node);
         }
 
@@ -362,8 +362,9 @@ namespace NETMCUCompiler.CodeBuilder
         }
 
         public override void VisitInvocationExpression(InvocationExpressionSyntax node)
-        {// 1. Получаем символ метода через семантическую модель (уже есть в твоем коде)
-            var methodSymbol = semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
+        {
+            // 1. Получаем символ метода через семантическую модель (уже есть в твоем коде)
+            var methodSymbol = context.SemanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
             if (methodSymbol == null) throw new Exception($"Символ не найден для: {node}");
 
             var args = node.ArgumentList.Arguments;
@@ -423,138 +424,5 @@ namespace NETMCUCompiler.CodeBuilder
             // Нам нужно пометить, что r0 теперь занят результатом (для будущих присваиваний)
         }
 
-    }
-    public class LibraryCompiler
-    {
-        public static void CompileProject(Compilation compilation, CompilationContext context)
-        {
-            var items = compilation.SyntaxTrees.Select(tree => {
-                var root = tree.GetRoot();
-                var model = compilation.GetSemanticModel(tree);
-                return (root, types: root.DescendantNodes()
-                .OfType<TypeDeclarationSyntax>()
-                .Where(@class => !context.ExceptClasses.Contains(@class))
-                .OrderByDescending(x => x == context.ProgramClass)
-                .ToArray(), 
-                enums: root.DescendantNodes().OfType<EnumDeclarationSyntax>().ToArray(), model);
-            }).ToArray();
-
-            // 1. Собираем типы
-            //var classes = root.DescendantNodes()
-            //    .OfType<TypeDeclarationSyntax>()
-            //    .Where(@class => !context.ExceptClasses.Contains(@class))
-            //    .OrderByDescending(x => x == context.ProgramClass)
-            //    .ToArray();
-
-            foreach (var item in items)
-            {
-                foreach (var @enum in item.enums)
-                {
-                    var typeSymbol = item.model.GetDeclaredSymbol(@enum) as INamedTypeSymbol;
-
-                    foreach (var member in @enum.Members)
-                    {
-                        // Получаем значение через семантическую модель (Roslyn сам посчитает 0, 1, 2...)
-                        var symbol = item.model.GetDeclaredSymbol(member);
-                        if (symbol?.ConstantValue != null)
-                        {
-                            int val = Convert.ToInt32(symbol.ConstantValue);
-
-                            // 1. Пытаемся получить символ типа через семантическую модель
-                            // Если по какой-то причине символ не определен, откатываемся к ToString()
-                            // Но для 'var' здесь уже будет реальное имя (например, GPIO_InitTypeDef)
-                            string typeName = typeSymbol?.ToDisplayString();
-
-
-                            string fullName = $"{(typeName ?? @enum.Identifier.Text)}.{member.Identifier.Text}";
-
-                            context.ConstantMap[fullName] = val; // "GPIO_Mode.OutputPushPull"
-                            context.ConstantMap[member.Identifier.Text] = val; // "OutputPushPull"
-                        }
-                    }
-                }
-
-                foreach (var @class in item.types)
-                {
-                    context.RegisterType(@class, item.model);
-
-                    foreach (var member in @class.Members.OfType<FieldDeclarationSyntax>()
-                        .Where(f => f.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword))))
-                    {
-                        foreach (var variable in member.Declaration.Variables)
-                        {
-                            if (variable.Initializer?.Value is LiteralExpressionSyntax literal)
-                            {
-                                int val = ASMInstructions.ParseLiteral(literal);
-                                context.ConstantMap[variable.Identifier.Text] = val;
-                                context.ConstantMap[$"{@class.Identifier.Text}.{variable.Identifier.Text}"] = val;
-                            }
-                        }
-                    }
-                }
-            }
-
-            foreach (var item in items)
-            {
-                foreach (var @class in item.types)
-                {
-                    foreach (var method in @class.Members.OfType<MethodDeclarationSyntax>().OrderByDescending(x => x == context.MainMethod))
-                    {
-                        if (context.ExceptMethods.Contains(method)) continue;
-
-                        CompileMethod(@class, method, context, item.model);
-                    }
-                }
-            }
-        }
-
-        private static void CompileMethod(TypeDeclarationSyntax cls, MethodDeclarationSyntax method, CompilationContext ctx, SemanticModel model)
-        {
-            if (method.Body == null && method.ExpressionBody == null) return;
-
-            ctx.RegisterMap.Clear();
-            ctx.NextFreeRegister = 4;
-
-            // СБОР ЛОКАЛЬНЫХ КОНСТАНТ МЕТОДА (вторая часть BuildAsm)
-            var localConsts = method.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
-                                .Where(s => s.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword)));
-
-            foreach (var localConst in localConsts)
-            {
-                foreach (var v in localConst.Declaration.Variables)
-                {
-                    if (v.Initializer?.Value is LiteralExpressionSyntax lit)
-                        ctx.ConstantMap[v.Identifier.Text] = ASMInstructions.ParseLiteral(lit);
-                }
-            }
-
-            bool isStatic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
-            ctx.RegisterMethod(model, cls, method, isStatic);
-
-            // Настраиваем фрейм (с учетом 'this' если метод не static)
-            ASMInstructions.EmitMethodPrologue(!isStatic, ctx);
-
-            var declarations = method.DescendantNodes().OfType<VariableDeclarationSyntax>();
-            foreach (var decl in declarations)
-            {
-                // 1. Пытаемся получить символ типа через семантическую модель
-                var typeSymbol = model.GetTypeInfo(decl.Type).Type;
-
-                // Если по какой-то причине символ не определен, откатываемся к ToString()
-                // Но для 'var' здесь уже будет реальное имя (например, GPIO_InitTypeDef)
-                string typeName = typeSymbol?.ToDisplayString() ?? decl.Type.ToString();
-
-                foreach (var v in decl.Variables)
-                {
-                    // Теперь ctx получит правильное имя типа даже для var
-                    ctx.AllocateOnStack(v.Identifier.Text, typeName);
-                }
-            }
-            // Пользуемся нашим старым добрым билдером для внутренностей
-            var builder = new Stm32MethodBuilder(ctx, model);
-            builder.Visit(method.Body);
-
-            ASMInstructions.EmitMethodEpilogue(ctx);
-        }
     }
 }

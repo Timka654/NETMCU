@@ -402,13 +402,14 @@ namespace NETMCUCompiler
 
             compilationContext = new CompilationContext()
             {
-                ExceptClasses = [mcuConfigClassDeclaration],
+                ExceptTypes = [mcuConfigClassDeclaration],
                 ExceptMethods = [],
                 BinaryPath = System.IO.Path.Combine(mcuBinPath, "output.bin"),
                 LinkerContexts = buildLinkers.ToArray(),
                 BuildingContext = this,
                 MainMethod = ProgramMainNode,
-                ProgramClass = ProgramMainTypeNode
+                ProgramClass = ProgramMainTypeNode,
+                SemanticModel = null
             };
 
             //if (type == BuildingOutputType.Executable)
@@ -1061,5 +1062,7 @@ namespace NETMCUCompiler
         public Dictionary<string, TypeMetadata> OutputTypes { get; } = new();
 
         public Dictionary<string, List<RelocationRecord>> InputMethods { get; } = new();
+
+        public Dictionary<string, object> Constants { get; } = new();
     }
 }
