@@ -6,7 +6,7 @@ using System.Security.Claims;
 
 namespace NETMCUCompiler.CodeBuilder
 {
-    public class Stm32MethodBuilder(CompilationContext context) : CSharpSyntaxWalker
+    public class Stm32MethodBuilder(MethodCompilationContext context) : CSharpSyntaxWalker
     {
         //public void BuildAsm(MethodDeclarationSyntax tree)
         //{
@@ -302,34 +302,34 @@ namespace NETMCUCompiler.CodeBuilder
         //    ASMInstructions.EmitMovRegister(targetReg, 0, context);
         //}
 
-        public override void VisitClassDeclaration(ClassDeclarationSyntax node)
-        {
-            if (context.ExceptTypes.Contains(node)) return;
-            base.VisitClassDeclaration(node);
-        }
+        //public override void VisitClassDeclaration(ClassDeclarationSyntax node)
+        //{
+        //    if (context.ExceptTypes.Contains(node)) return;
+        //    base.VisitClassDeclaration(node);
+        //}
 
-        private void ProcessCondition(ExpressionSyntax condition, string failedLabel)
-        {
-            if (condition is BinaryExpressionSyntax bin)
-            {
-                // Если это логическое ИЛИ (||)
-                if (bin.IsKind(SyntaxKind.LogicalOrExpression))
-                {
-                    string trueLabel = $"L_CONDITION_TRUE_{context.LabelCount++}";
-                    // Если левая часть верна -> прыгаем в тело (trueLabel)
-                    // Здесь нужна инверсия инверсии, но для простоты:
-                    ProcessSubCondition(bin.Left, trueLabel, isOr: true);
-                    // Если нет -> проверяем правую часть
-                    ProcessSubCondition(bin.Right, failedLabel, isOr: false);
-                    context.Asm.AppendLine($"{trueLabel}:");
-                }
-                else
-                {
-                    // Обычное одиночное сравнение
-                    ProcessSubCondition(condition, failedLabel, isOr: false);
-                }
-            }
-        }
+        //private void ProcessCondition(ExpressionSyntax condition, string failedLabel)
+        //{
+        //    if (condition is BinaryExpressionSyntax bin)
+        //    {
+        //        // Если это логическое ИЛИ (||)
+        //        if (bin.IsKind(SyntaxKind.LogicalOrExpression))
+        //        {
+        //            string trueLabel = $"L_CONDITION_TRUE_{context.LabelCount++}";
+        //            // Если левая часть верна -> прыгаем в тело (trueLabel)
+        //            // Здесь нужна инверсия инверсии, но для простоты:
+        //            ProcessSubCondition(bin.Left, trueLabel, isOr: true);
+        //            // Если нет -> проверяем правую часть
+        //            ProcessSubCondition(bin.Right, failedLabel, isOr: false);
+        //            context.Asm.AppendLine($"{trueLabel}:");
+        //        }
+        //        else
+        //        {
+        //            // Обычное одиночное сравнение
+        //            ProcessSubCondition(condition, failedLabel, isOr: false);
+        //        }
+        //    }
+        //}
 
         private void ProcessSubCondition(ExpressionSyntax expr, string label, bool isOr)
         {
@@ -418,7 +418,7 @@ namespace NETMCUCompiler.CodeBuilder
             string callTarget = nativeFunctionName ?? methodSymbol.ToDisplayString();
 
             // 5. Генерируем BL
-            ASMInstructions.EmitCall(callTarget, context, methodSymbol.IsStatic);
+            ASMInstructions.EmitCall(callTarget, context, methodSymbol.IsStatic, nativeAttr != null);
 
             // Если метод что-то возвращает, результат в r0. 
             // Нам нужно пометить, что r0 теперь занят результатом (для будущих присваиваний)

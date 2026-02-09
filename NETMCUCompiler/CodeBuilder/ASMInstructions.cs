@@ -9,7 +9,7 @@ namespace NETMCUCompiler.CodeBuilder
 {
     public class ASMInstructions
     {
-        public static void EmitArithmetic(BinaryExpressionSyntax node, int targetReg, CompilationContext context, int tempOffset = 0)
+        public static void EmitArithmetic(BinaryExpressionSyntax node, int targetReg, MethodCompilationContext context, int tempOffset = 0)
         {
             // Левая часть: используем текущий свободный регистр (r0, r1...)
             int leftReg = GetOperandRegister(node.Left, context, tempOffset);
@@ -52,7 +52,7 @@ namespace NETMCUCompiler.CodeBuilder
             }
         }
 
-        private static int GetOperandRegister(ExpressionSyntax expr, CompilationContext context, int tempOffset)
+        private static int GetOperandRegister(ExpressionSyntax expr, MethodCompilationContext context, int tempOffset)
         {
             if (expr is IdentifierNameSyntax id && context.RegisterMap.TryGetValue(id.Identifier.Text, out int reg)) return reg;
 
@@ -67,7 +67,7 @@ namespace NETMCUCompiler.CodeBuilder
             return tempOffset;
         }
 
-        private static void EmitOpWithImmediate(SyntaxKind op, int target, int left, int value, CompilationContext context)
+        private static void EmitOpWithImmediate(SyntaxKind op, int target, int left, int value, MethodCompilationContext context)
         {
             // Thumb encoding T1 (3-bit immediate): ADDS Rd, Rn, #imm3
             // Формат: [000][11][10][imm3][Rn][Rd]
@@ -80,7 +80,7 @@ namespace NETMCUCompiler.CodeBuilder
             context.Bytecode((byte)(opcode & 0xFF));
             context.Bytecode((byte)(opcode >> 8));
         }
-        public static void EmitArithmeticOp(SyntaxKind op, int target, int left, int right, CompilationContext context)
+        public static void EmitArithmeticOp(SyntaxKind op, int target, int left, int right, MethodCompilationContext context)
         {
             // 1. Умножение (Rd = Rd * Rm)
             if (op == SyntaxKind.MultiplyExpression)
@@ -156,7 +156,7 @@ namespace NETMCUCompiler.CodeBuilder
             }
         }
 
-        public static void EmitMovRegister(int target, int source, CompilationContext context)
+        public static void EmitMovRegister(int target, int source, MethodCompilationContext context)
         {
             // ASM: MOV r4, r5
             context.Emit($"MOV r{target}, r{source}");
@@ -179,7 +179,7 @@ namespace NETMCUCompiler.CodeBuilder
         }
 
         // Базовый MOV (Rd = Imm8)
-        public static void EmitMovImmediate(int reg, int val, CompilationContext context)
+        public static void EmitMovImmediate(int reg, int val, MethodCompilationContext context)
         {
             if (val <= 255 && val >= 0)
             {
@@ -207,7 +207,7 @@ namespace NETMCUCompiler.CodeBuilder
                 context.Write32(op);
             }
         }
-        public static void EmitDivide(int target, int left, int right, CompilationContext context)
+        public static void EmitDivide(int target, int left, int right, MethodCompilationContext context)
         {
             context.Emit($"SDIV r{target}, r{left}, r{right}");
             // Кодировка SDIV: 1111 1011 1001 [Rn] 1111 [Rd] 1111 [Rm]
@@ -219,7 +219,7 @@ namespace NETMCUCompiler.CodeBuilder
             context.Write32(op);
         }
 
-        public static void EmitLogicalCondition(ExpressionSyntax condition, string trueLabel, string falseLabel, CompilationContext context)
+        public static void EmitLogicalCondition(ExpressionSyntax condition, string trueLabel, string falseLabel, MethodCompilationContext context)
         {
             if (condition is ParenthesizedExpressionSyntax paren)
             {
@@ -329,7 +329,7 @@ namespace NETMCUCompiler.CodeBuilder
                 }
             }
         }
-        public static void EmitExpression(ExpressionSyntax expr, int targetReg, CompilationContext context, int tempOffset = 0)
+        public static void EmitExpression(ExpressionSyntax expr, int targetReg, MethodCompilationContext context, int tempOffset = 0)
         {
             if (expr is LiteralExpressionSyntax literal)
             {
@@ -384,7 +384,7 @@ namespace NETMCUCompiler.CodeBuilder
             }
         }
 
-        public static void EmitFunctionFrame(MethodDeclarationSyntax node, CompilationContext context, Action bodyBuilder)
+        public static void EmitFunctionFrame(MethodDeclarationSyntax node, MethodCompilationContext context, Action bodyBuilder)
         {
             var methodName = node.Identifier.Text;
 
@@ -420,7 +420,7 @@ namespace NETMCUCompiler.CodeBuilder
             context.Bytecode(0xBD);
         }
 
-        public static void EmitCompare(int leftReg, int rightReg, CompilationContext context)
+        public static void EmitCompare(int leftReg, int rightReg, MethodCompilationContext context)
         {
             context.Emit($"CMP r{leftReg}, r{rightReg}");
             // Thumb-16: 0x4280 | (right << 3) | left
@@ -428,14 +428,14 @@ namespace NETMCUCompiler.CodeBuilder
             context.Write16(opcode);
         }
 
-        public static void EmitCompareImmediate(int reg, int value, CompilationContext context)
+        public static void EmitCompareImmediate(int reg, int value, MethodCompilationContext context)
         {
             context.Emit($"CMP r{reg}, #{value}");
             // Thumb-16: 0x2800 | (reg << 8) | (value & 0xFF)
             ushort opcode = (ushort)(0x2800 | (reg << 8) | (value & 0xFF));
             context.Write16(opcode);
         }
-        public static void EmitCondition(ExpressionSyntax condition, string falseLabel, CompilationContext context)
+        public static void EmitCondition(ExpressionSyntax condition, string falseLabel, MethodCompilationContext context)
         {
             if (condition is BinaryExpressionSyntax binary)
             {
@@ -478,7 +478,7 @@ namespace NETMCUCompiler.CodeBuilder
                 }
             }
         }
-        public static void EmitJump(string label, CompilationContext context)
+        public static void EmitJump(string label, MethodCompilationContext context)
         {
             context.Emit($"B {label}");
 
@@ -488,7 +488,7 @@ namespace NETMCUCompiler.CodeBuilder
             context.Bytecode(0x00);
             context.Bytecode(0xE0);
         }
-        public static void EmitConditionalBranch(SyntaxKind conditionKind, string targetLabel, CompilationContext context)
+        public static void EmitConditionalBranch(SyntaxKind conditionKind, string targetLabel, MethodCompilationContext context)
         {
             // Выбираем операцию инвертированного перехода
             string jmpOp = conditionKind switch
@@ -507,7 +507,7 @@ namespace NETMCUCompiler.CodeBuilder
             context.Bytecode(0x00);
             context.Bytecode(0xD0); // Код инструкции B<cc> (0xD0 - 0xDF)
         }
-        public static void EmitBranch(string label, string condition, CompilationContext context)
+        public static void EmitBranch(string label, string condition, MethodCompilationContext context)
         {
             // condition может быть "EQ", "NE", "GT", "LT", "GE", "LE"
             context.Emit($"B{condition} {label}");
@@ -551,11 +551,11 @@ namespace NETMCUCompiler.CodeBuilder
                 throw new Exception("Неподдерживаемый тип константы");
             }
         }
-        public static void EmitCall(string methodName, CompilationContext context, bool isStatic)
+        public static void EmitCall(string methodName, MethodCompilationContext context, bool isStatic, bool isNative)
         {
             context.Emit($"BL {methodName}");
 
-            context.AddRelocation(methodName, isStatic);
+            context.AddRelocation(methodName, isStatic, isNative);
 
             // Пишем 4 байта заглушки (0x00F0 0x00F8). 
             // Линковщик найдет их по оффсету из NativeRelocations и заменит на реальный оффсет.
@@ -563,7 +563,7 @@ namespace NETMCUCompiler.CodeBuilder
             context.Write16(0xF800);
         }
 
-        public static void EmitMethodPrologue(bool isInstance, CompilationContext context)
+        public static void EmitMethodPrologue(bool isInstance, MethodCompilationContext context)
         {
             // Сохраняем регистры. r4 будет нашим "this" внутри функции.
             context.Emit("PUSH {r4-r11, lr}");
@@ -576,7 +576,7 @@ namespace NETMCUCompiler.CodeBuilder
                 context.RegisterMap["this"] = 4; // Закрепляем r4 за контекстом объекта
             }
         }
-        public static void EmitMethodEpilogue(CompilationContext context)
+        public static void EmitMethodEpilogue(MethodCompilationContext context)
         {
             context.Emit("Main_exit:"); // Метка для быстрых выходов (return)
             context.Emit("POP {r4-r11, pc}");
@@ -588,7 +588,7 @@ namespace NETMCUCompiler.CodeBuilder
             context.Emit(".align 4"); // Выравнивание для следующей функции
         }
 
-        public void EmitMethodFrame(MethodDeclarationSyntax node, CompilationContext ctx, bool isInstance)
+        public void EmitMethodFrame(MethodDeclarationSyntax node, MethodCompilationContext ctx, bool isInstance)
         {
             ctx.Emit($"PUSH {{r4-r11, lr}}");
             if (isInstance)
@@ -601,7 +601,7 @@ namespace NETMCUCompiler.CodeBuilder
             // ... остальная логика тела ...
         }
 
-        public static bool TryGetAsConstant(ExpressionSyntax expr, CompilationContext context, out object value)
+        public static bool TryGetAsConstant(ExpressionSyntax expr, MethodCompilationContext context, out object value)
         {
             value = 0;
             if (expr is LiteralExpressionSyntax literal) { value = ParseLiteral(literal); return true; }
@@ -641,7 +641,7 @@ namespace NETMCUCompiler.CodeBuilder
             binary[offset + 3] = (byte)(low >> 8);
         }
 
-        public static int GetOperand(ExpressionSyntax expr, CompilationContext ctx, int targetReg)
+        public static int GetOperand(ExpressionSyntax expr, MethodCompilationContext ctx, int targetReg)
         {
             var symbol = ctx.SemanticModel.GetSymbolInfo(expr).Symbol;
 

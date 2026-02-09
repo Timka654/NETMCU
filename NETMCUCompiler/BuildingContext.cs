@@ -161,7 +161,7 @@ namespace NETMCUCompiler
 
             bo.Configurations["CFLAGS_LIBS"] = libs;
 
-            bo.Configurations["CFLAGS_INCLUDES"] = string.Join(" ", bo.Include.Select(inc => $"-I{inc}").GroupBy(x=>x).Select(x=>x.Key));
+            bo.Configurations["CFLAGS_INCLUDES"] = string.Join(" ", bo.Include.Select(inc => $"-I{inc}").GroupBy(x => x).Select(x => x.Key));
 
             bo.Configurations["CFLAGS"] = $"{bo.Configurations["CFLAGS"].Trim()} {bo.Configurations["CFLAGS_INCLUDES"]}";
 
@@ -249,9 +249,9 @@ namespace NETMCUCompiler
                     }
 
                     if (item.ValidValues != null && !item.ValidValues.Contains(iVal))
-                    { 
+                    {
                         item.Messages.TryGetValue("INVALID_VALUE", out var msg);
-                        throw new Exception(msg ?? $"Input configuration '{item.Name}' has invalid value '{iVal}'. Valid values are: {string.Join(", ", item.ValidValues.Select(x=>$"\"{x}\""))}.");
+                        throw new Exception(msg ?? $"Input configuration '{item.Name}' has invalid value '{iVal}'. Valid values are: {string.Join(", ", item.ValidValues.Select(x => $"\"{x}\""))}.");
                     }
                 }
                 else
@@ -386,26 +386,27 @@ namespace NETMCUCompiler
         }
 
         CompilationContext? compilationContext;
-        LinkerContext? compilationLinker = new LinkerContext();
+        //LinkerContext? compilationLinker = new LinkerContext();
 
         public async Task<bool> Compile()
         {
-            return await compile(compilationLinker);
+            return await compile(/*compilationLinker*/);
         }
 
-        private async Task<bool> compile(LinkerContext? linker)
+        private async Task<bool> compile(/*LinkerContext? linker*/)
         {
-            var buildLinkers = new List<LinkerContext>() { compilationLinker };
+        //    var buildLinkers = new List<LinkerContext>() { compilationLinker };
 
-            if (linker != null && linker != compilationLinker)
-                buildLinkers.Add(linker);
+        //    if (linker != null && linker != compilationLinker)
+        //        buildLinkers.Add(linker);
 
             compilationContext = new CompilationContext()
             {
+                ParentContext = null,
                 ExceptTypes = [mcuConfigClassDeclaration],
                 ExceptMethods = [],
                 BinaryPath = System.IO.Path.Combine(mcuBinPath, "output.bin"),
-                LinkerContexts = buildLinkers.ToArray(),
+                //LinkerContexts = buildLinkers.ToArray(),
                 BuildingContext = this,
                 MainMethod = ProgramMainNode,
                 ProgramClass = ProgramMainTypeNode,
@@ -421,26 +422,29 @@ namespace NETMCUCompiler
 
             foreach (var reference in referenceContexts)
             {
-                if (!await reference.Value.compile(linker))
+                if (!await reference.Value.compile(/*linker*/))
                     throw new Exception($"Failed to compile referenced project: {reference.Value.Path}");
+                compilationContext.FillConstants(reference.Value.compilationContext!.GetConstantMap());
             }
+
 
             //foreach (var tree in Compilation.SyntaxTrees)
             //{
             //    var sm = Compilation.GetSemanticModel(tree);
 
-                LibraryCompiler.CompileProject(Compilation, compilationContext);
+            LibraryCompiler.CompileProject(Compilation, compilationContext);
             //}
 
 
 
             DumpMeta();
-            DumpLinker();
 
             if (type == BuildingOutputType.Executable)
                 DumpApplication();
             else
                 DumpLibrary();
+
+            DumpLinker();
 
             return true;
         }
@@ -459,7 +463,14 @@ namespace NETMCUCompiler
 
         }
 
-        byte[] BuildImage()
+        IEnumerable<MethodCompilationContext> Methods => compilationContext.Childs
+                .SelectMany(x => x.Value.Childs.Values)
+                .OfType<MethodCompilationContext>();
+
+        IEnumerable<MethodCompilationContext> PublicMethods => Methods.Where(m => m.IsPublic);
+
+
+        byte[] BuildAppImage()
         {
             // Список для хранения финального бинарника
 
@@ -467,20 +478,20 @@ namespace NETMCUCompiler
             // Карта смещений: Контекст -> Смещение в итоговом файле
             Dictionary<CompilationContext, int> contextOffsets = new();
 
-            var refs = CollectReferences().Prepend(this).ToArray();
 
-            foreach (var ctx in refs)
-            {
-                contextOffsets[ctx.compilationContext] = (int)finalImage.Position;
 
-                var oldOffset = ctx.compilationContext.Bin.Position;
+            Dictionary<string, uint> globalSymbolTable = new();
 
-                ctx.compilationContext.Bin.Position = 0;
-                ctx.compilationContext.Bin.CopyTo(finalImage);
-                ctx.compilationContext.Bin.Position = oldOffset;
+            // 1. Добавляем символы ядра (из kernel.map)
+            foreach (var coreSym in CoreSymbols)
+                if (!globalSymbolTable.TryAdd(coreSym.Key, (uint)coreSym.Value)) throw new Exception($"Duplicate symbol in global symbol table: {coreSym.Key}");
+
+
+            using (var kernel = System.IO.File.OpenRead(System.IO.Path.Combine(buildDir, "kernel.elf")))
+            { 
+                kernel.CopyTo(finalImage);
             }
 
-            byte[] binary = finalImage.ToArray();
 
             uint userCodeAddr = 0;
             var sa = Options.Configurations["STARTUP_ADDRESS"];
@@ -490,21 +501,51 @@ namespace NETMCUCompiler
             else
                 userCodeAddr = uint.Parse(sa);
 
-            Dictionary<string, uint> globalSymbolTable = new();
+            finalImage.Seek(userCodeAddr, SeekOrigin.Current);
 
-            // 1. Добавляем символы ядра (из kernel.map)
-            foreach (var coreSym in CoreSymbols)
-                globalSymbolTable[coreSym.Key] = (uint)coreSym.Value;
+
+            Dictionary<string, List<int>> coreCallOffsets = new ();
+
+            var refs = CollectReferences().Prepend(this).ToArray();
+
+            foreach (var ctx in refs)
+            {
+                int startOffset = (int)finalImage.Position;
+
+                foreach (var item in ctx.PublicMethods)
+                {
+                    if (!globalSymbolTable.TryAdd(item.Name,  (uint)(startOffset + item.BinaryOffset))) throw new Exception($"Duplicate symbol in global symbol table: {item.Name}");
+                }
+
+                foreach (var item in ctx.compilationContext.NativeRelocations)
+                {
+                    if (!coreCallOffsets.TryGetValue(item.Key, out var redirections))
+                    {
+                        redirections = new List<int>();
+                        coreCallOffsets[item.Key] = redirections;
+                    }
+                    
+                    redirections.AddRange(item.Value.Select(x=>(int)(x.Context.BinaryOffset + x.Offset + startOffset)));
+                }
+
+                finalImage.Write(ctx.BuildImage());
+
+                contextOffsets[ctx.compilationContext!] = startOffset;
+            }
+
+            byte[] binary = finalImage.ToArray();
+
 
             // 2. Добавляем методы наших библиотек
-            foreach (var method in compilationLinker.OutputMethods)
-            {
-                int libOffset = contextOffsets[method.Value.context];
-                uint absoluteAddr = (uint)(userCodeAddr + libOffset + method.Value.position);
-                globalSymbolTable[method.Key] = absoluteAddr;
-            }
+            //foreach (var method in globalSymbolTable)
+            //{
+            //    int libOffset = contextOffsets[method.Value.context.Class.Global];
+            //    uint absoluteAddr = (uint)(userCodeAddr + libOffset + method.Value.position);
+            //    globalSymbolTable[method.Key] = absoluteAddr;
+            //}
+
             // Проходим по всем релокациям (импортам методов)
-            foreach (var inputGroup in compilationLinker.InputMethods)
+            foreach (var inputGroup in coreCallOffsets)
             {
                 string methodName = inputGroup.Key;
 
@@ -515,7 +556,7 @@ namespace NETMCUCompiler
                 foreach (var rel in inputGroup.Value)
                 {
                     // 1. Находим, где в итоговом массиве лежит инструкция BL
-                    int instrGlobalOffset = contextOffsets[rel.Context] + rel.Offset;
+                    int instrGlobalOffset = rel;
                     uint instrAddr = (uint)(userCodeAddr + instrGlobalOffset);
 
                     // 2. Считаем дистанцию (Target - (PC + 4))
@@ -831,7 +872,7 @@ namespace NETMCUCompiler
 
                         continue;
                     }
-
+                     
                     if (_ma.AttributeClass.ToDisplayString() == "System.MCU.Compiler.Attributes.RepositoryConfigurationValueAttribute")
                     {
                         var path = GetBaseValue<string>(_ma, item, "Path", "PathArg", out _);
@@ -842,7 +883,7 @@ namespace NETMCUCompiler
 
                         var depth = GetBaseValue<int>(_ma, item, "Depth", "DepthArg", out var depthEx);
 
-                        if(!depthEx) depth = 1;
+                        if (!depthEx) depth = 1;
 
                         bo.GitRepositories.Add(new GitRepositoryConfiguration
                         {
@@ -947,20 +988,76 @@ namespace NETMCUCompiler
         void DumpLinker()
         {
             var outputPath = System.IO.Path.Combine(mcuBinPath, "linker.netmcu");
+
+            var methods = Methods;
+
+            if(methods.Any(x=>x.BinaryOffset == null))
+                throw new Exception("Some methods have null BinaryOffset. First you must build image.");
+
             var meta = new
             {
-                OutputMethods = compilationLinker.OutputMethods.ToDictionary(x => x.Key, x => new { x.Value.position, x.Value.isStatic }),
-                compilationLinker.OutputTypes,
-                InputMethods = compilationLinker.InputMethods.ToDictionary(x => x.Key, x => x.Value.Select(x => x.Offset))
+                OutputMethods = methods
+                .Where(x=>x.IsPublic)
+                .ToDictionary(x => x.Name, x => new { x.BinaryOffset, x.IsStatic }),
+                OutputTypes = compilationContext.Childs
+                .OfType<TypeCompilationContext>()
+                .ToDictionary(
+                    x => x.Name,
+                    x => new { x.Size, x.IsClass, x.FieldOffsets }
+                    ),
+                InputMethods = compilationContext.NativeRelocations.ToDictionary(x => x.Key, x => x.Value.Select(x => x.Offset))
             };
             string json = JsonSerializer.Serialize(meta, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(outputPath, json);
         }
 
         void DumpLibrary()
-            => DumpBinary(compilationContext.Bin.ToArray());
-        void DumpApplication()
             => DumpBinary(BuildImage());
+        void DumpApplication()
+            => DumpBinary(BuildAppImage());
+
+        byte[]? builtImage = null;
+        byte[] BuildImage()
+        {
+            if (builtImage != null) return builtImage;
+
+            using MemoryStream methodData = new MemoryStream();
+
+            foreach (var type in compilationContext.Childs)
+            {
+                foreach (var method in type.Value.Childs.Values.Cast<MethodCompilationContext>())
+                {
+                    method.BinaryOffset = (int)methodData.Position;
+
+                    var oldPos = method.Bin.Position;
+
+                    method.Bin.Position = 0;
+                    
+                    method.Bin.CopyTo(methodData);
+                    
+                    method.Bin.Position = oldPos;
+                }
+            }
+
+            builtImage = methodData.ToArray();
+
+            return builtImage;
+        }
+
+        string BuildAsm()
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (var type in compilationContext.Childs)
+            {
+                foreach (var method in type.Value.Childs.Values.Cast<MethodCompilationContext>())
+                {
+                    sb.AppendLine($"; Method: {method.Name}, Offset: 0x{method.BinaryOffset:X}");
+                    sb.Append(method.Asm);
+                    sb.AppendLine();
+                }
+            }
+            return sb.ToString();
+        }
 
         void DumpBinary(byte[] data)
         {
@@ -968,7 +1065,7 @@ namespace NETMCUCompiler
 #if DEBUG
             var asmPath = string.Join('.', outputPath.Split('.').SkipLast(1)) + ".asm";
 
-            File.WriteAllText(asmPath, compilationContext.Asm.ToString());
+            File.WriteAllText(asmPath, BuildAsm());
 #endif
             File.WriteAllBytes(outputPath, data);
         }
@@ -1052,17 +1149,17 @@ namespace NETMCUCompiler
 
         public Dictionary<string, string> DefaultValues { get; set; } = new();
     }
-    public record RelocationRecord(CompilationContext Context, int Offset, bool isStatic);
-    public record LinkerRecord(CompilationContext context, int position, bool isStatic);
+    public record RelocationRecord(MethodCompilationContext Context, int Offset, bool isStatic);
+    //public record LinkerRecord(MethodCompilationContext context, int position, bool isStatic);
 
-    public class LinkerContext
-    {
-        public Dictionary<string, LinkerRecord> OutputMethods { get; } = new();
+    //public class LinkerContext
+    //{
+    //    public Dictionary<string, LinkerRecord> OutputMethods { get; } = new();
 
-        public Dictionary<string, TypeMetadata> OutputTypes { get; } = new();
+    //    public Dictionary<string, TypeMetadata> OutputTypes { get; } = new();
 
-        public Dictionary<string, List<RelocationRecord>> InputMethods { get; } = new();
+    //    public Dictionary<string, List<RelocationRecord>> InputMethods { get; } = new();
 
-        public Dictionary<string, object> Constants { get; } = new();
-    }
+    //    public Dictionary<string, object> Constants { get; } = new();
+    //}
 }

@@ -5,12 +5,12 @@ using System.MCU.Compiler.Attributes;
 namespace NETMCUCore.STM
 {
 
-    public class HAL_RCC_API
-    {
-        // Эту функцию нам нужно будет добавить в main.c в Docker
-        [NativeCall("System_Enable_GPIO_Clock")]
-        public static extern void NativeEnableClock(int portIdx);
-    }
+    //public class HAL_RCC_API
+    //{
+    //    // Эту функцию нам нужно будет добавить в main.c в Docker
+    //    [NativeCall("System_Enable_GPIO_Clock")]
+    //    public static extern void NativeEnableClock(int portIdx);
+    //}
 
     public class HAL_GPIO_API
     {
@@ -24,8 +24,55 @@ namespace NETMCUCore.STM
         public static extern void NativeWrite(uint port, uint pin, int state);
     }
 
+    public struct t1
+    {
+        private enum GPIO3_Port
+        {
+            A = 0,
+            B = 1,
+            C = 2,
+            D = 3,
+            E = 4,
+            F = 5,
+            G = 6,
+            H = 7,
+            I = 8
+        }
+    }
+
     public class GPIO
     {
+        public class qwerte
+        {
+
+        }
+
+        public enum GPIO2_Port
+        {
+            A = 0,
+            B = 1,
+            C = 2,
+            D = 3,
+            E = 4,
+            F = 5,
+            G = 6,
+            H = 7,
+            I = 8
+        }
+
+        private enum GPIO3_Port
+        {
+            A = 0,
+            B = 1,
+            C = 2,
+            D = 3,
+            E = 4,
+            F = 5,
+            G = 6,
+            H = 7,
+            I = 8
+        }
+
         // Базовый адрес GPIOA на шине AHB1
         private const uint GPIO_BASE = 0x40020000;
         // Регистр включения тактирования портов
@@ -36,8 +83,20 @@ namespace NETMCUCore.STM
         private static uint GetPortAddress(GPIO_Port portIdx)
             => GPIO_BASE + ((uint)portIdx * 0x400);
 
+        static void NativeEnableClock(int portIdx)
+        {
+            GetPortAddress((GPIO_Port)portIdx);
+        }
+
         public static void EnableClock(GPIO_Port port)
         {
+            static void NativeEnableClock(int portIdx)
+            {
+                GetPortAddress((GPIO_Port)portIdx);
+            }
+
+            NativeEnableClock(-1);
+
             //// Читаем текущее значение, ставим бит порта и пишем обратно
             //uint val = Memory.Read(RCC_AHB1ENR);
             //val |= (uint)(1 << (int)port);
