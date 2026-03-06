@@ -19,7 +19,7 @@ namespace NETMCUCompiler.CodeBuilder
 
             if (node.Right is LiteralExpressionSyntax literal)
             {
-                int value = ParseLiteral(literal);
+                int value = ParseLiteral(literal,context);
                 if (value >= 0 && value <= 7 && (node.IsKind(SyntaxKind.AddExpression) || node.IsKind(SyntaxKind.SubtractExpression)))
                 {
                     EmitOpWithImmediate(node.Kind(), targetReg, leftReg, value, context);
@@ -258,7 +258,7 @@ namespace NETMCUCompiler.CodeBuilder
                 // 1. Пытаемся понять, что справа: число или константа/enum
                 if (bin.Right is LiteralExpressionSyntax literal)
                 {
-                    rightVal = ASMInstructions.ParseLiteral(literal);
+                    rightVal = ASMInstructions.ParseLiteral(literal, context);
                 }
                 else if (context.TryGetConstant(bin.Right, out var constVal))
                 {
@@ -333,9 +333,27 @@ namespace NETMCUCompiler.CodeBuilder
         {
             if (expr is LiteralExpressionSyntax literal)
             {
-                // Случай: var a = 10;
-                int value = ParseLiteral(literal);
-                EmitMovImmediate(targetReg, value, context);
+                if (literal.IsKind(SyntaxKind.StringLiteralExpression))
+                {
+                    var stringValue = literal.Token.ValueText;
+                    var compilationContext = context.Class.Global;
+
+                    var stringSymbol = compilationContext.StringLiterals
+                        .FirstOrDefault(kvp => kvp.Value == stringValue).Key;
+
+                    if (stringSymbol == null)
+                        throw new InvalidOperationException($"String literal '{stringValue}' was not found in the compilation context.");
+
+                    context.AddDataRelocation(stringSymbol);
+                    context.Emit($"LDR r{targetReg}, ={stringSymbol} ; (placeholder for MOVW/MOVT)");
+                    context.Bin.Write(new byte[8], 0, 8);
+                }
+                else
+                {
+                    // Случай: var a = 10;
+                    int value = ParseLiteral(literal, context);
+                    EmitMovImmediate(targetReg, value, context);
+                }
             }
             else if (expr is IdentifierNameSyntax id)
             {
@@ -454,7 +472,7 @@ namespace NETMCUCompiler.CodeBuilder
 
                     if (binary.Right is LiteralExpressionSyntax literal)
                     {
-                        int val = ParseLiteral(literal);
+                        int val = ParseLiteral(literal, context);
                         EmitCompareImmediate(leftReg, val, context);
                     }
 
@@ -527,7 +545,7 @@ namespace NETMCUCompiler.CodeBuilder
             context.Bytecode((byte)(0xD0 | condCode));
         }
 
-        public static int ParseLiteral(LiteralExpressionSyntax literal)
+        public static int ParseLiteral(LiteralExpressionSyntax literal, MethodCompilationContext context)
         {
             var valueText = literal.Token.ValueText;
 
@@ -537,6 +555,11 @@ namespace NETMCUCompiler.CodeBuilder
 
             // 2. Обработка null (обычно 0)
             if (literal.IsKind(SyntaxKind.NullLiteralExpression)) return 0;
+
+            if (literal.IsKind(SyntaxKind.StringLiteralExpression))
+            {
+                return -1;
+            }
 
             // 3. Обработка чисел (включая hex 0x...)
             try
@@ -563,17 +586,50 @@ namespace NETMCUCompiler.CodeBuilder
             context.Write16(0xF800);
         }
 
-        public static void EmitMethodPrologue(bool isInstance, MethodCompilationContext context)
+        public static void EmitMethodPrologue(bool isInstance, System.Collections.Immutable.ImmutableArray<IParameterSymbol> parameters, MethodCompilationContext context)
         {
-            // Сохраняем регистры. r4 будет нашим "this" внутри функции.
+            // Сохраняем регистры, которые мы будем использовать.
             context.Emit("PUSH {r4-r11, lr}");
+            context.Write16(0xB5F0); // PUSH {r4-r7, lr} - нужно будет расширить до r11
 
+            int argOffset = 0;
             if (isInstance)
             {
-                // По стандарту ARM r0 - первый аргумент. 
-                // В экземпляре класса r0 всегда передает адрес объекта.
+                // По стандарту ARM r0 - первый аргумент.
+                // В методе экземпляра r0 всегда передает адрес объекта ('this').
                 context.Emit("MOV r4, r0");
-                context.RegisterMap["this"] = 4; // Закрепляем r4 за контекстом объекта
+                context.RegisterMap["this"] = 4;
+                context.NextFreeRegister = 5; // Начинаем выделять регистры для переменных с r5
+                argOffset = 1; // Аргументы самого метода начнутся с r1
+            }
+            else
+            {
+                context.NextFreeRegister = 4; // В статических методах 'this' нет, начинаем с r4
+            }
+
+            // Сохраняем входящие аргументы из r0-r3 в r4-r11
+            for (int i = 0; i < parameters.Length; i++)
+            {
+                int sourceReg = i + argOffset;
+                if (sourceReg > 3)
+                {
+                    // Аргументы, которые не поместились в r0-r3, приходят через стек.
+                    // Пока мы это не реализуем, но нужно иметь в виду.
+                    break;
+                }
+
+                if (context.NextFreeRegister > 11)
+                    throw new Exception("Недостаточно регистров для сохранения всех аргументов метода.");
+
+                int destReg = context.NextFreeRegister++;
+                string paramName = parameters[i].Name;
+
+                // Генерируем инструкцию MOV для сохранения
+                EmitMovRegister(destReg, sourceReg, context);
+                context.Emit($"@ Save parameter '{paramName}' from r{sourceReg} to r{destReg}");
+
+                // "Фиксируем" регистр за параметром
+                context.RegisterMap[paramName] = destReg;
             }
         }
         public static void EmitMethodEpilogue(MethodCompilationContext context)
@@ -604,7 +660,7 @@ namespace NETMCUCompiler.CodeBuilder
         public static bool TryGetAsConstant(ExpressionSyntax expr, MethodCompilationContext context, out object value)
         {
             value = 0;
-            if (expr is LiteralExpressionSyntax literal) { value = ParseLiteral(literal); return true; }
+            if (expr is LiteralExpressionSyntax literal) { value = ParseLiteral(literal, context); return true; }
 
             if (expr is IdentifierNameSyntax id && context.TryGetConstant(context.SemanticModel.GetSymbolInfo(expr).Symbol.ToDisplayString(), out value))
                 return true;
@@ -663,6 +719,35 @@ namespace NETMCUCompiler.CodeBuilder
             }
 
             throw new Exception($"Не удалось разрешить операнд: {expr}");
+        }
+
+        /// <summary>
+        /// Патчит пару инструкций MOVW/MOVT для загрузки 32-битного значения в регистр r0.
+        /// </summary>
+        /// <param name="binary">Массив байт всей прошивки.</param>
+        /// <param name="offset">Смещение до места, где начинается 8-байтовый плейсхолдер.</param>
+        /// <param name="value">32-битный адрес, который нужно загрузить.</param>
+        public static void PatchMovwMovt(byte[] binary, int offset, uint value)
+        {
+            // Эта реализация предполагает, что целевой регистр - r0.
+            // MOVW r0, #lower_16_bits
+            uint lower = value & 0xFFFF;
+            uint movw = 0xF2400000 | (((lower >> 12) & 0xF) << 16) | (lower & 0xFFF);
+
+            // MOVT r0, #upper_16_bits
+            uint upper = (value >> 16) & 0xFFFF;
+            uint movt = 0xF2C00000 | (((upper >> 12) & 0xF) << 16) | (upper & 0xFFF);
+
+            // Записываем инструкции в little-endian формате
+            binary[offset + 0] = (byte)movw;
+            binary[offset + 1] = (byte)(movw >> 8);
+            binary[offset + 2] = (byte)(movw >> 16);
+            binary[offset + 3] = (byte)(movw >> 24);
+
+            binary[offset + 4] = (byte)movt;
+            binary[offset + 5] = (byte)(movt >> 8);
+            binary[offset + 6] = (byte)(movt >> 16);
+            binary[offset + 7] = (byte)(movt >> 24);
         }
     }
 }

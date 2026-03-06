@@ -69,6 +69,15 @@ namespace NETMCUCompiler.CodeBuilder
                 var model = compilation.GetSemanticModel(tree);
                 var rootDesc = root.DescendantNodes();
 
+                // Собираем все строковые литералы из дерева синтаксиса
+                var stringLiterals = rootDesc.OfType<LiteralExpressionSyntax>()
+                    .Where(x => x.IsKind(SyntaxKind.StringLiteralExpression));
+
+                foreach (var literal in stringLiterals)
+                {
+                    context.RegisterStringLiteral(literal.Token.ValueText);
+                }
+
                 var types = rootDesc
                 .OfType<TypeDeclarationSyntax>()
                 .ToArray();
@@ -131,7 +140,9 @@ namespace NETMCUCompiler.CodeBuilder
                     else if (x.Parent is BlockSyntax bs && bs.Parent is MethodDeclarationSyntax) { }
                     else throw new Exception($"Родительский узел метода должен быть классом или структурой, найдено: {x.Parent.GetType().FullName}");
 
-                    var c = new MethodCompilationContext() { MethodSyntax = x, Name = GetFullNodeName(x), ParentContext = tcc };
+                    var csi = model.GetDeclaredSymbol(x);
+
+                    var c = new MethodCompilationContext(x) {  Name = csi.ToDisplayString(), ParentContext = tcc };
 
                     return c;
                 })
@@ -226,7 +237,7 @@ namespace NETMCUCompiler.CodeBuilder
                         if (@var.Initializer?.Value is LiteralExpressionSyntax literal)
                         {
                             var fullName = GetFullNodeName(@var);
-                            int val = ASMInstructions.ParseLiteral(literal);
+                            int val = ASMInstructions.ParseLiteral(literal, null);
 
                             if (isPublic)
                                 context.RegisterConstant(fullName, val);
@@ -252,7 +263,7 @@ namespace NETMCUCompiler.CodeBuilder
                     {
                         if ((c.Value.MethodSyntax.Parent is BlockSyntax bs && bs.Parent is MethodDeclarationSyntax md))
                         {
-                            var fullname = GetFullNodeName(md);
+                            var fullname = item.SemanticModel.GetDeclaredSymbol(md).ToDisplayString();
                             item.Methods.TryGetValue(fullname, out var pMethod);
 
                             c.Value.ParentContext = pMethod;
@@ -261,6 +272,7 @@ namespace NETMCUCompiler.CodeBuilder
                     }
 
                     c.Value.ParentContext.Childs.Add(c.Key, c.Value);
+                    context.RegisterMethod(c.Value);
                 }
             }
 
@@ -296,7 +308,7 @@ namespace NETMCUCompiler.CodeBuilder
                 foreach (var v in localConst.Declaration.Variables)
                 {
                     if (v.Initializer?.Value is LiteralExpressionSyntax lit)
-                        method.RegisterConstant(v.Identifier.Text, ASMInstructions.ParseLiteral(lit));
+                        method.RegisterConstant(v.Identifier.Text, ASMInstructions.ParseLiteral(lit, method));
                 }
             }
 
@@ -307,9 +319,10 @@ namespace NETMCUCompiler.CodeBuilder
             string fullName = methodSymbol.ToDisplayString();
 
             bool isStatic = modifiers.Value.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
+            var parameters = methodSymbol.Parameters;
 
-            // Настраиваем фрейм (с учетом 'this' если метод не static)
-            ASMInstructions.EmitMethodPrologue(!isStatic, method);
+            // Настраиваем фрейм, теперь передавая параметры
+            ASMInstructions.EmitMethodPrologue(!isStatic, parameters, method);
 
             var declarations = method.MethodSyntax.DescendantNodes().OfType<VariableDeclarationSyntax>();
             foreach (var decl in declarations)

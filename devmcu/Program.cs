@@ -11,6 +11,8 @@ namespace devmcu
         {
             HAL.Init();
 
+            WriteLine("Hello, NETMCU!");
+            WriteLine("This is a test of string literals.");
 
             var t = GPIO_Port.PortC;
 
@@ -34,6 +36,11 @@ namespace devmcu
                 // 4. Ждем 500мс (HAL_Delay теперь должен работать)
                 HAL.Delay(500);
             }
+        }
+
+        static void WriteLine(string t)
+        {
+            return;
         }
     }
 }

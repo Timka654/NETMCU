@@ -52,6 +52,21 @@ namespace NETMCUCompiler.CodeBuilder
         //    }
         //}
 
+        private List<MethodCompilationContext> Methods = new List<MethodCompilationContext>();
+
+        public void RegisterMethod(MethodCompilationContext item)
+        {
+            Methods.Add(item);
+        }
+
+        public void UnregisterMethod(MethodCompilationContext item)
+        {
+            Methods.Remove(item);
+        }
+
+        public IEnumerable<MethodCompilationContext> GetMethods()
+            => Methods;
+
         private Dictionary<string, object> ConstantMap { get; } = new();
 
         public KeyValuePair<string, object>[] GetConstantMap()
@@ -103,6 +118,37 @@ namespace NETMCUCompiler.CodeBuilder
                 ReferenceRelocations.GetOrAdd(name, _ => new List<RelocationRecord>())
                     .Add(i);
         }
+        public ConcurrentDictionary<string, List<RelocationRecord>> DataRelocations { get; } = new();
+
+        public void AddDataRelocation(MethodCompilationContext context, string name, int offset)
+        {
+            var i = new RelocationRecord(context, offset, true); // Данные всегда "статичны"
+            DataRelocations.GetOrAdd(name, _ => new List<RelocationRecord>()).Add(i);
+        }
+
+        #region StringLiteral
+
+
+        private readonly Dictionary<string, string> _stringLiterals = new();
+        private int _stringLiteralCounter = 0;
+
+        public IReadOnlyDictionary<string, string> StringLiterals => _stringLiterals;
+
+        public string RegisterStringLiteral(string value)
+        {
+            // Проверяем, был ли уже зарегистрирован такой литерал, чтобы избежать дубликатов
+            var existing = _stringLiterals.FirstOrDefault(kvp => kvp.Value == value);
+            if (existing.Key != null)
+            {
+                return existing.Key; // Возвращаем существующий символ
+            }
+
+            var symbolName = $"__string_literal_{_stringLiteralCounter++}";
+            _stringLiterals[symbolName] = value;
+            return symbolName;
+        }
+
+        #endregion
 
         public override string ToString()
         {

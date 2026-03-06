@@ -1,13 +1,15 @@
 ﻿using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System;
+using System.Collections.Concurrent;
 using System.Text;
 
 namespace NETMCUCompiler.CodeBuilder
 {
     public class MethodCompilationContext : BaseCompilationContext
     {
-        public required SyntaxNode MethodSyntax { get; set; }
+        public SyntaxNode MethodSyntax { get; }
 
         public required string Name { get; set; }
 
@@ -15,8 +17,10 @@ namespace NETMCUCompiler.CodeBuilder
 
         public bool IsPublic { get; }
 
-        public MethodCompilationContext()
+        public MethodCompilationContext(SyntaxNode methodSyntax)
         {
+            MethodSyntax = methodSyntax;
+
             if (MethodSyntax is MethodDeclarationSyntax methodDecl)
             {
                 IsPublic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword));
@@ -61,12 +65,38 @@ namespace NETMCUCompiler.CodeBuilder
             Write16(high);
             Write16(low);
         }
-
         public string NextLabel(string prefix) => $"L_{prefix}_{LabelCount++}";
 
         public void AddRelocation(string name, bool isStatic, bool isNative)
-            => Class.Global.AddRelocation(this, name, isStatic || isNative, isNative, (int)Bin.Position);
-            
+        {
+                Class.Global.AddRelocation(this, name, isStatic || isNative, isNative, (int)Bin.Position);
+        }
+
+        //public void EmitLoadAddress(string register, string symbolName)
+        //{
+        //    // Добавляем релокацию данных по текущему смещению в бинарном коде метода
+        //    Class.Global.AddDataRelocation(this, symbolName, (int)Bin.Length);
+
+        //    // Генерируем плейсхолдер для пары инструкций MOVW/MOVT
+        //    Emit($"MOVW+MOVT {register}, =<symbol> ; placeholder for {symbolName}");
+        //    Bin.Write(new byte[8], 0, 8); // Резервируем 8 байт
+        //}
+
+        public void AddDataRelocation(string symbolName)
+        {
+            Class.Global.AddDataRelocation(this, symbolName, (int)this.Bin.Length);
+        }
+
+        //public void EmitLoadStringAddress(string register, string symbolName)
+        //{
+        //    // Добавляем запись о релокации данных.
+        //    Class.Global.AddDataRelocation(this, symbolName, (int)this.Bin.Length);
+
+        //    // Генерируем ассемблерный плейсхолдер и резервируем 8 байт
+        //    // для пары инструкций MOVW/MOVT.
+        //    this.Emit($"LDR {register}, ={symbolName} ; (placeholder for MOVW/MOVT)");
+        //    this.Bin.Write(new byte[8], 0, 8);
+        //}
 
         // Храним переменные, которые живут на стеке
         public Dictionary<string, StackVariable> StackMap { get; } = new();
@@ -142,5 +172,8 @@ namespace NETMCUCompiler.CodeBuilder
 
             return false;
         }
+
+        public override string ToString()
+        => Name;
     }
 }

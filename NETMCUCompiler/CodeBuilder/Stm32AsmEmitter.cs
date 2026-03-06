@@ -140,10 +140,27 @@ namespace NETMCUCompiler.CodeBuilder
         }
         public override void VisitLiteralExpression(LiteralExpressionSyntax node)
         {
-            int val = ASMInstructions.ParseLiteral(node);
+            int val = ASMInstructions.ParseLiteral(node, context);
             int reg = context.NextFreeRegister++; // Или твоя логика выделения
             context.Emit($"MOVS R{reg}, #{val}");
             context.LastUsedRegister = reg;
+        }
+        public void EmitLoadStringAddress(string register, string symbolName)
+        {
+            // Предполагаем, что регистр всегда r0 для простоты
+            //if (register != "r0")
+            //{
+            //    throw new NotSupportedException("Загрузка адресов строк поддерживается только для регистра r0.");
+            //}
+
+            // Добавляем запись о релокации данных.
+            // Линкер позже запишет сюда абсолютный адрес символа.
+            context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
+
+            // Генерируем ассемблерный плейсхолдер и резервируем 8 байт
+            // для пары инструкций MOVW/MOVT.
+            context.Emit($"LDR {register}, ={symbolName} ; (placeholder for MOVW/MOVT)");
+            context.Bin.Write(new byte[8], 0, 8);
         }
 
         public override void VisitIdentifierName(IdentifierNameSyntax node)

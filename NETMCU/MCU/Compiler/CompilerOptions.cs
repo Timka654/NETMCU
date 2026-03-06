@@ -46,6 +46,10 @@ namespace System.MCU.Compiler
         [ReplaceConfigurationValue(Name = "STARTUP_ADDRESS", ValueArg = nameof(address))]
         public void SetStartupAddress(int address) { }
 
+
+        [ReplaceConfigurationValue(Name = "FLASH_BASE_ADDRESS", ValueArg = nameof(address))]
+        public void SetFlashAddress(int address) { }
+
         [ReplaceConfigurationValue(Name = "MCU_TYPE", ValueArg = nameof(type))]
         public void SetMCUType(string type) { }
 

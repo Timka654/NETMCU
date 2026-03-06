@@ -3,6 +3,7 @@
 ## General Guidelines
 - First general instruction
 - Second general instruction
+- When providing code, do not replace entire files. Instead, provide only the specific code snippets that need to be added or modified, keeping the user's existing code intact.
 
 ## Code Style
 - Use specific formatting rules

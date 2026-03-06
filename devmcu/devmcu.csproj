@@ -13,4 +13,7 @@
 	<ItemGroup>
 	  <Folder Include="HAL_INPUT\" />
 	</ItemGroup>
+	<ItemGroup>
+	  <None Include="bin\Debug\net10.0\NETMCU\*" />
+	</ItemGroup>
 </Project>
