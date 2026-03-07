@@ -22,7 +22,8 @@ namespace NETMCUCompiler.CodeBuilder
 
         public bool IgnoreMethodCompilation => ParentContext is TypeCompilationContext typeCompilation && typeCompilation.CompilerType;
 
-        public MethodCompilationContext(SyntaxNode methodSyntax, IMethodSymbol symbol)
+        public MethodCompilationContext(SyntaxNode methodSyntax, IMethodSymbol symbol, BaseCompilationContext? ParentContext)
+            : base(ParentContext)
         {
             MethodSyntax = methodSyntax;
 

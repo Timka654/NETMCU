@@ -1,4 +1,5 @@
-﻿using NETMCUCompiler.CodeBuilder;
+﻿using Microsoft.CodeAnalysis;
+using NETMCUCompiler.CodeBuilder;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -48,7 +49,7 @@ namespace NETMCUCompiler
                 OutputMethods = methods
                 .Where(x => x.IsPublic)
                 .ToDictionary(x => x.Name, x => new { x.BinaryOffset, x.IsStatic, x.NativeName }),
-                OutputTypes = compilationContext.Childs
+                OutputTypes = compilationContext.Childs.Values
                 .OfType<TypeCompilationContext>()
                 .ToDictionary(
                     x => x.Name,
@@ -190,9 +191,8 @@ namespace NETMCUCompiler
                 return true;
             }
 
-            compilationContext = new CompilationContext()
+            compilationContext = new CompilationContext(null)
             {
-                ParentContext = null,
                 ExceptTypes = [mcuConfigClassDeclaration],
                 ExceptMethods = [],
                 BinaryPath = System.IO.Path.Combine(mcuBinPath, "output.bin"),
@@ -249,6 +249,57 @@ namespace NETMCUCompiler
                 var bytes = Encoding.UTF8.GetBytes(literal.Value);
                 writer.Write(bytes);
                 writer.Write((byte)0); // Нулевой терминатор
+            }
+
+            return ms.ToArray();
+        }
+
+        private byte[] BuildTypeDataSection(out Dictionary<string, uint> offsets, Dictionary<string, uint> globalSymbolTable)
+        {
+            offsets = new Dictionary<string, uint>();
+            using var ms = new MemoryStream();
+            using var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
+
+            foreach (var t in compilationContext.TypeLiterals.OrderBy(x => x.Key))
+            {
+                while (ms.Position % 4 != 0)
+                {
+                    writer.Write((byte)0);
+                }
+
+                offsets[t.Key] = (uint)ms.Position;
+
+                bool keepMetadata = Options.TypeMetaDataLevel == "Full";
+                if (!keepMetadata && Options.TypeMetaDataLevel == "Custom")
+                {
+                    keepMetadata = t.Value.GetAttributes().Any(a => 
+                        a.AttributeClass?.Name == "KeepMetadataAttribute" || 
+                        a.AttributeClass?.Name == "KeepMetadata");
+                }
+
+                int fieldsCount = t.Value.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count();
+                int size = fieldsCount * 4;
+                if (Options.TypeHeader && t.Value.IsReferenceType) size += 4;
+                if (size == 0) size = 4;
+
+                writer.Write((uint)size);
+
+                if (keepMetadata)
+                {
+                    string stringSymbol = compilationContext.GetStringLiteralSymbol(t.Value.ToDisplayString());
+                    if (stringSymbol != null && globalSymbolTable.TryGetValue(stringSymbol, out uint nameAddr))
+                    {
+                        writer.Write((uint)nameAddr);
+                    }
+                    else
+                    {
+                        writer.Write((uint)0);
+                    }
+                }
+                else
+                {
+                    writer.Write((uint)0);
+                }
             }
 
             return ms.ToArray();
@@ -328,7 +379,9 @@ namespace NETMCUCompiler
 
                 foreach (var item in ctx.PublicMethods)
                 {
-                    if (!globalSymbolTable.TryAdd(item.Name, (uint)(libraryBaseAddr + item.BinaryOffset))) throw new Exception($"Duplicate symbol in global symbol table: {item.Name}");
+                    // For Thumb mode (Cortex-M), method pointers must have the lowest bit set to 1.
+                    // This ensures BLX <reg> successfully switches to Thumb state (which must always occur).
+                    if (!globalSymbolTable.TryAdd(item.Name, (uint)(libraryBaseAddr + item.BinaryOffset + 1))) throw new Exception($"Duplicate symbol in global symbol table: {item.Name}");
                 }
 
                 foreach (var item in ctx.compilationContext.NativeRelocations)
@@ -369,6 +422,25 @@ namespace NETMCUCompiler
                 var symbolName = entry.Key;
                 var offsetInSection = entry.Value;
                 var absoluteAddr = roDataSectionAddr + offsetInSection;
+                if (!globalSymbolTable.TryAdd(symbolName, absoluteAddr))
+                {
+                    throw new Exception($"Duplicate symbol in global symbol table: {symbolName}");
+                }
+            }
+
+            // --- СОЗДАНИЕ И ДОБАВЛЕНИЕ СЕКЦИИ .TYPEDATA ---
+            var typeDataBytes = BuildTypeDataSection(out var typeDataOffsets, globalSymbolTable);
+
+            while (finalImage.Position % 4 != 0) finalImage.WriteByte(0);
+
+            uint typeDataSectionAddr = flashBaseAddress + (uint)finalImage.Position;
+            finalImage.Write(typeDataBytes, 0, typeDataBytes.Length);
+
+            foreach (var entry in typeDataOffsets)
+            {
+                var symbolName = entry.Key;
+                var offsetInSection = entry.Value;
+                var absoluteAddr = typeDataSectionAddr + offsetInSection;
                 if (!globalSymbolTable.TryAdd(symbolName, absoluteAddr))
                 {
                     throw new Exception($"Duplicate symbol in global symbol table: {symbolName}");

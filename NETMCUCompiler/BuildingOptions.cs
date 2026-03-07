@@ -151,6 +151,9 @@ namespace NETMCUCompiler
             }).ToList();
         }
 
+        public string TypeMetaDataLevel { get; set; } = "Full"; // Full, Custom, None
+        public bool TypeHeader { get; set; } = true;
+
         public List<string> Include { get; set; } = new();
         public List<string> Libraries { get; set; } = new();
         public List<string> Packages { get; set; } = new();

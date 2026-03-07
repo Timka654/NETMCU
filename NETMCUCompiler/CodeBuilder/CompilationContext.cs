@@ -8,7 +8,7 @@ using System.Xml.Linq;
 
 namespace NETMCUCompiler.CodeBuilder
 {
-    public class CompilationContext : BaseCompilationContext
+    public class CompilationContext(BaseCompilationContext? ParentContext) : BaseCompilationContext(ParentContext)
     {
         public required SemanticModel SemanticModel { get; set; }
 
@@ -134,6 +134,30 @@ namespace NETMCUCompiler.CodeBuilder
             DataRelocations.GetOrAdd(name, _ => new List<RelocationRecord>()).Add(i);
         }
 
+        #region TypeLiterals
+
+        private readonly Dictionary<string, ITypeSymbol> _typeLiterals = new();
+
+        public IReadOnlyDictionary<string, ITypeSymbol> TypeLiterals => _typeLiterals;
+
+        public string RegisterTypeLiteral(ITypeSymbol typeSymbol)
+        {
+            var targetName = typeSymbol.ToDisplayString();
+            // clean up name for assembly label symbol
+            var cleanName = targetName.Replace("global::", "").Replace(".", "_").Replace("<", "_").Replace(">", "_").Replace(",", "_").Replace(" ", "");
+            var symbolName = $"__type_literal_{cleanName}";
+
+            if (!_typeLiterals.ContainsKey(symbolName))
+            {
+                _typeLiterals[symbolName] = typeSymbol;
+                // Pre-register string literal for type metadata name
+                RegisterStringLiteral(typeSymbol.ToDisplayString());
+            }
+            return symbolName;
+        }
+
+        #endregion
+
         #region StringLiteral
 
 
@@ -154,6 +178,12 @@ namespace NETMCUCompiler.CodeBuilder
             var symbolName = $"__string_literal_{_stringLiteralCounter++}";
             _stringLiterals[symbolName] = value;
             return symbolName;
+        }
+
+        public string? GetStringLiteralSymbol(string value)
+        {
+            var existing = _stringLiterals.FirstOrDefault(kvp => kvp.Value == value);
+            return existing.Key;
         }
 
         #endregion

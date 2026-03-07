@@ -21,12 +21,13 @@ namespace NETMCUCompiler.CodeBuilder
 
         public IReadOnlyDictionary<string, int> FieldOffsets { get; }
 
-        public TypeCompilationContext(TypeDeclarationSyntax type, SemanticModel semanticModel)
+        public TypeCompilationContext(TypeDeclarationSyntax type, SemanticModel semanticModel, CompilationContext global) : base(global)
         {
+            ParentContext = global;
             TypeSyntax = type;
             SemanticModel = semanticModel;
 
-            int currentOffset = 0;
+            int currentOffset = global.BuildingContext.Options?.TypeHeader == true && type is ClassDeclarationSyntax ? 4 : 0;
 
             Dictionary<string, int> fieldOffsets = new();
 

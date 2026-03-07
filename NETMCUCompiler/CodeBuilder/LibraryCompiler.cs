@@ -84,13 +84,13 @@ namespace NETMCUCompiler.CodeBuilder
                 var classes = types.OfType<ClassDeclarationSyntax>()
                 .Where(type => !context.ExceptTypes.Contains(type))
                 .OrderByDescending(x => x == context.ProgramClass)
-                .Select(x => new TypeCompilationContext(x, model) { Name = GetFullNodeName(x), ParentContext = context })
+                .Select(x => new TypeCompilationContext(x, model, context) { Name = GetFullNodeName(x) })
                 .ToDictionary(x => x.Name, x => x);
 
                 var structs = types.OfType<StructDeclarationSyntax>()
                 .Where(type => !context.ExceptTypes.Contains(type))
                 .Select(x =>
-                new TypeCompilationContext(x, model) { Name = GetFullNodeName(x), ParentContext = context })
+                new TypeCompilationContext(x, model, context) { Name = GetFullNodeName(x) })
                 .ToDictionary(x => x.Name, x => x); ;
 
                 var enums = rootDesc.OfType<EnumDeclarationSyntax>()
@@ -155,7 +155,7 @@ namespace NETMCUCompiler.CodeBuilder
 
                     var csi = model.GetDeclaredSymbol(x) as IMethodSymbol;
 
-                    var c = new MethodCompilationContext(x, csi) { Name = csi?.ToDisplayString() ?? "UnknownMethod", ParentContext = tcc };
+                    var c = new MethodCompilationContext(x, csi, tcc) { Name = csi?.ToDisplayString() ?? "UnknownMethod" };
 
                     return c;
                 })

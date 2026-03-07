@@ -4,7 +4,12 @@
     {
         public Dictionary<string, BaseCompilationContext> Childs { get; } = new();
 
-        public required BaseCompilationContext? ParentContext { get; set; }
+        public BaseCompilationContext? ParentContext { get; set; }
+
+        protected BaseCompilationContext(BaseCompilationContext? ParentContext)
+        {
+            this.ParentContext = ParentContext;
+        }
 
         public abstract CompilationContextTypeEnum ContextType { get; }
     }

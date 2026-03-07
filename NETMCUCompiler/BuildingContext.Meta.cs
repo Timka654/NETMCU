@@ -116,6 +116,18 @@ namespace NETMCUCompiler
 
                 var msbuildProject = new Microsoft.Build.Evaluation.Project(project.FilePath);
 
+                string typeMetaDataLevel = msbuildProject.GetPropertyValue("TypeMetaDataLevel");
+                if (!string.IsNullOrEmpty(typeMetaDataLevel))
+                {
+                    options.TypeMetaDataLevel = typeMetaDataLevel;
+                }
+
+                string typeHeaderStr = msbuildProject.GetPropertyValue("TypeHeader");
+                if (!string.IsNullOrEmpty(typeHeaderStr) && bool.TryParse(typeHeaderStr, out bool typeHeader))
+                {
+                    options.TypeHeader = typeHeader;
+                }
+
                 string outDir = msbuildProject.GetPropertyValue("OutDir"); // Путь к bin
                 string intermediateDir = msbuildProject.GetPropertyValue("IntermediateOutputPath"); // Путь к obj
                 RootPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(project.FilePath, ".."));

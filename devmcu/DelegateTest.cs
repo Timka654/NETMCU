@@ -1,0 +1,1 @@
+using System; namespace devmcu { public class DelegateTest { static void MyMethod() { } public static void Test() { Action a = new Action(MyMethod); a(); Action b = MyMethod; b(); } } }

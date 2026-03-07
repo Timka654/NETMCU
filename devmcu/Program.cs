@@ -24,6 +24,8 @@ namespace devmcu
 
         public static void Main()
         {
+            DelegateTest.Test();
+
             int[] data = new int[] { 1, 2, 3, 4, 5 };
             int result = ProcessArray(data);
 

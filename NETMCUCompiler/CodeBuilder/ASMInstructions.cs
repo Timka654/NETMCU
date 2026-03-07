@@ -9,6 +9,71 @@ namespace NETMCUCompiler.CodeBuilder
 {
     public class ASMInstructions
     {
+        private static void EmitDelegateCreation(IMethodSymbol targetMethod, ExpressionSyntax nodeExpr, ITypeSymbol delegateType, int targetReg, MethodCompilationContext context, int tempOffset)
+        {
+            int size = context.Class.Global.BuildingContext.Options?.TypeHeader == true ? 12 : 8; // delegate size is 8 bytes + 4 for header
+            EmitMovImmediate(0, size, context);
+
+            // Call the native allocator (returns ptr in R0)
+            EmitCall("NETMCU__Memory__Alloc", context, isStatic: true, isNative: true);
+
+            bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
+            if (typeHeader)
+            {
+                string targetName = delegateType.ToDisplayString();
+                string symbolName = context.Class.Global.RegisterTypeLiteral(delegateType);
+                context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
+
+                int tmpReg = context.NextFreeRegister++;
+                context.Emit($"@ Write TypeHeader for delegate {targetName}");
+                context.Emit($"LDR r{tmpReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
+                context.Bin.Write(new byte[8], 0, 8);
+
+                context.Emit($"STR r{tmpReg}, [r0, #0]"); // Put type ptr at beginning of allocation
+                context.NextFreeRegister--;
+            }
+
+            int targetOffset = typeHeader ? 4 : 0;
+            int ptrOffset = targetOffset + 4;
+            if (context.Class.Global.Childs.TryGetValue("System.Delegate", out var delTypeCtx) && delTypeCtx is TypeCompilationContext delTcc)
+            {
+                delTcc.FieldOffsets.TryGetValue("Target", out targetOffset);
+                delTcc.FieldOffsets.TryGetValue("MethodPtr", out ptrOffset);
+            }
+
+            int delObjReg = targetReg == 0 ? 0 : targetReg;
+            if (targetReg != 0) EmitMovRegister(delObjReg, 0, context);
+
+            int methodValReg = context.NextFreeRegister++;
+            string methodName = targetMethod.ToDisplayString();
+            context.Class.Global.AddRelocation(context, methodName, targetMethod.IsStatic, false, (int)context.Bin.Length);
+            context.Emit($"LDR r{methodValReg}, ={methodName} ; (placeholder for address)");
+            context.Bin.Write(new byte[8], 0, 8);
+
+            context.Emit($"STR r{methodValReg}, [r{delObjReg}, #{ptrOffset}]");
+
+            int targetValReg = context.NextFreeRegister++;
+            if (targetMethod.IsStatic)
+            {
+                EmitMovImmediate(targetValReg, 0, context);
+            }
+            else
+            {
+                if (nodeExpr is MemberAccessExpressionSyntax delMemberAccess)
+                {
+                    EmitExpression(delMemberAccess.Expression, targetValReg, context, tempOffset);
+                }
+                else
+                {
+                    // Implicit this
+                    context.Emit($"MOV r{targetValReg}, r4");
+                }
+            }
+            context.Emit($"STR r{targetValReg}, [r{delObjReg}, #{targetOffset}]");
+
+            context.NextFreeRegister -= 2;
+        }
+
         public static void EmitArithmetic(BinaryExpressionSyntax node, int targetReg, MethodCompilationContext context, int tempOffset = 0)
         {
             // Левая часть: используем текущий свободный регистр (r0, r1...)
@@ -422,6 +487,20 @@ namespace NETMCUCompiler.CodeBuilder
         }
         public static void EmitExpression(ExpressionSyntax expr, int targetReg, MethodCompilationContext context, int tempOffset = 0)
         {
+            var symbolInfo = context.SemanticModel.GetSymbolInfo(expr);
+            var possibleMethod = symbolInfo.Symbol as IMethodSymbol ?? context.SemanticModel.GetMemberGroup(expr).FirstOrDefault() as IMethodSymbol;
+
+            if (possibleMethod != null && expr.Parent is not InvocationExpressionSyntax)
+            {
+                var typeInfo = context.SemanticModel.GetTypeInfo(expr);
+                var convertedType = typeInfo.ConvertedType;
+                if (convertedType != null && convertedType.TypeKind == TypeKind.Delegate)
+                {
+                    EmitDelegateCreation(possibleMethod, expr, convertedType, targetReg, context, tempOffset);
+                    return;
+                }
+            }
+
             var constOpt = context.SemanticModel.GetConstantValue(expr);
             if (constOpt.HasValue)
             {
@@ -652,9 +731,37 @@ namespace NETMCUCompiler.CodeBuilder
             }
             else if (expr is TypeOfExpressionSyntax typeOfExpr)
             {
-                // TODO: Return a pointer to type metadata object. For now we return 0 (null) or a stub id.
-                context.Emit($"@ TODO: typeof({typeOfExpr.Type})");
-                EmitMovImmediate(targetReg, 0, context);
+                var typeSymbol = context.SemanticModel.GetSymbolInfo(typeOfExpr.Type).Symbol as ITypeSymbol;
+                if (typeSymbol != null)
+                {
+                    string level = context.Class.Global.BuildingContext.Options?.TypeMetaDataLevel ?? "Full";
+                    bool keepMetadata = level == "Full";
+                    if (level == "Custom")
+                    {
+                        keepMetadata = typeSymbol.GetAttributes().Any(a => a.AttributeClass?.Name == "KeepMetadataAttribute" || a.AttributeClass?.Name == "KeepMetadata");
+                    }
+
+                    if (keepMetadata)
+                    {
+                        string targetName = typeSymbol.ToDisplayString();
+                        string symbolName = context.Class.Global.RegisterTypeLiteral(typeSymbol);
+                        context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
+
+                        context.Emit($"@ typeof({targetName})");
+                        context.Emit($"LDR r{targetReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
+                        context.Bin.Write(new byte[8], 0, 8);
+                    }
+                    else
+                    {
+                        context.Emit($"@ typeof({typeSymbol.ToDisplayString()}) -> NULL (Metadata Level: {level})");
+                        EmitMovImmediate(targetReg, 0, context);
+                    }
+                }
+                else
+                {
+                    context.Emit($"@ typeof({typeOfExpr.Type}) -> NULL");
+                    EmitMovImmediate(targetReg, 0, context);
+                }
             }
             else if (expr is CastExpressionSyntax castExpr)
             {
@@ -688,8 +795,8 @@ namespace NETMCUCompiler.CodeBuilder
                 }
 
                 // Иначе это чтение свойства объекта или поля (obj.Property или obj.Field)
-                var symbolInfo = context.SemanticModel.GetSymbolInfo(memberAccess).Symbol;
-                if (symbolInfo is IPropertySymbol propertySymbol)
+                var memberSymbolInfo = context.SemanticModel.GetSymbolInfo(memberAccess).Symbol;
+                if (memberSymbolInfo is IPropertySymbol propertySymbol)
                 {
                     // Обращение к свойству транслируется в вызов метода get_Property
                     if (propertySymbol.GetMethod != null)
@@ -713,7 +820,7 @@ namespace NETMCUCompiler.CodeBuilder
                         }
                     }
                 }
-                else if (symbolInfo is IFieldSymbol fieldSymbol)
+                else if (memberSymbolInfo is IFieldSymbol fieldSymbol)
                 {
                     string fieldName = fieldSymbol.Name;
                     string typeName = fieldSymbol.ContainingType.ToDisplayString();
@@ -775,20 +882,65 @@ namespace NETMCUCompiler.CodeBuilder
             }
             else if (expr is ObjectCreationExpressionSyntax objectCreation)
             {
-                var typeSymbol = context.SemanticModel.GetTypeInfo(objectCreation.Type).Type;
+                var typeSymbol = context.SemanticModel.GetTypeInfo(objectCreation).Type;
+                Console.WriteLine($"[DEBUG-ALLOC] ObjectCreation: {objectCreation}. TypeSymbol: {typeSymbol?.ToDisplayString()}, TypeKind: {typeSymbol?.TypeKind}");
 
-                int size = 4; // minimum size
+                // Handle Delegate Explicit Creation early
+                if (typeSymbol != null && typeSymbol.TypeKind == TypeKind.Delegate)
+                {
+                    var ctorArg = objectCreation.ArgumentList?.Arguments.FirstOrDefault()?.Expression;
+                    var symInfo = ctorArg != null ? context.SemanticModel.GetSymbolInfo(ctorArg).Symbol : null;
+                    var memGrp = ctorArg != null ? context.SemanticModel.GetMemberGroup(ctorArg).FirstOrDefault() : null;
+                    Console.WriteLine($"[DEBUG] ctorArg for {objectCreation} is {ctorArg}. symInfo: {symInfo != null}, memGrp: {memGrp != null}");
+
+                    var targetMethodCtor = symInfo as IMethodSymbol ?? memGrp as IMethodSymbol;
+
+                    if (targetMethodCtor != null)
+                    {
+                        EmitDelegateCreation(targetMethodCtor, ctorArg, typeSymbol, targetReg, context, tempOffset);
+                        return;
+                    }
+                    Console.WriteLine($"[DEBUG] Failed to resolve target method for explicit delegate creation: {objectCreation}");
+                }
+
+                int size = 0; // default empty size
+                bool hasHeader = false;
+
                 if (typeSymbol != null)
                 {
+                    hasHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true && typeSymbol.IsReferenceType;
+                    if (hasHeader) size += 4;
+
                     // Compute basic size for classes (just counting fields * 4)
                     int fieldsCount = typeSymbol.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count();
-                    if (fieldsCount > 0) size = fieldsCount * 4;
+                    size += fieldsCount * 4;
+                    if (size == 0) size = 4; // minimum alloc size
+                }
+                else
+                {
+                    size = 4;
                 }
 
                 EmitMovImmediate(0, size, context);
 
                 // Call the native allocator (returns ptr in R0)
                 EmitCall("NETMCU__Memory__Alloc", context, isStatic: true, isNative: true);
+
+                // If memory has a header, we fill it with pointer to type metadata
+                if (hasHeader)
+                {
+                    string targetName = typeSymbol.ToDisplayString();
+                    string symbolName = context.Class.Global.RegisterTypeLiteral(typeSymbol);
+                    context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
+
+                    int tmpReg = context.NextFreeRegister++;
+                    context.Emit($"@ Write TypeHeader for {targetName}");
+                    context.Emit($"LDR r{tmpReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
+                    context.Bin.Write(new byte[8], 0, 8);
+
+                    context.Emit($"STR r{tmpReg}, [r0, #0]"); // Put type ptr at beginning of allocation
+                    context.NextFreeRegister--;
+                }
 
                 // Store object pointer to targetReg
                 if (targetReg != 0)
@@ -911,6 +1063,69 @@ namespace NETMCUCompiler.CodeBuilder
                 if (methodSymbol == null) throw new Exception($"Символ не найден для вызова: {invocation}");
 
                 var args = invocation.ArgumentList.Arguments;
+
+                if (methodSymbol.MethodKind == MethodKind.DelegateInvoke)
+                {
+                    int delegateReg = context.NextFreeRegister++;
+                    EmitExpression(invocation.Expression, delegateReg, context, tempOffset);
+
+                    // Load Target into r0, and MethodPtr into r12 (or temporary register)
+                    // We assume Delegate is inherited and has `Target` and `MethodPtr` fields
+                    int targetOffset = 0;
+                    int ptrOffset = 0;
+                    if (context.Class.Global.Childs.TryGetValue("System.Delegate", out var delTypeCtx) && delTypeCtx is TypeCompilationContext delTcc)
+                    {
+                        delTcc.FieldOffsets.TryGetValue("Target", out targetOffset);
+                        delTcc.FieldOffsets.TryGetValue("MethodPtr", out ptrOffset);
+                    }
+                    else
+                    {
+                        // Fallback offsets (assuming TypeHeader takes 4 bytes if present, but we don't know). Safe fallback:
+                        bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
+                        targetOffset = typeHeader ? 4 : 0;
+                        ptrOffset = targetOffset + 4;
+                    }
+
+                    // Arguments start from r1 for Delegate 'this' wrapper is not sent, rather 'Target' is sent.
+                    // Wait, if Target is null, r0 is null, but we just pass it anyway (for static methods r0 is practically ignored or we just send it).
+                    // Actually, if it's static, the method doesn't expect 'this' in r0. If we send it, it might overwrite the first argument!
+                    // Wait, ARM calling convention: r0-r3 are arguments. 
+                    // If target is static, r0 is the first argument! We can't just put Target in r0 blindly.
+                    // So we must check if the original bound method was static? We don't know it here at runtime easily without a flag.
+                    // Instead, in .NET Micro, we can do a trick: we always pass Target as first argument ONLY if Target != null?
+                    // No, static methods take arg1 in r0.
+                    // For now, let's keep it simple: we always call through an adapter or we don't support mixed static/instance well yet.
+                    // Let's assume instance methods for delegates for now (Target to r0, args to r1-r3).
+
+                    context.NextFreeRegister = delegateReg + 1; // reserve r0-r3 for call
+
+                    // Evaluate arguments first, storing them in stack or higher regs?
+                    // Actually, let's just evaluate them carefully.
+                    // Since r0 is taken by Target, user args go to r1..3.
+                    for (int i = 0; i < args.Count; i++)
+                    {
+                        int argReg = i + 1;
+                        if (argReg > 3) throw new Exception("Поддерживается максимум 3 аргумента для делегатов");
+                        EmitExpression(args[i].Expression, argReg, context, tempOffset);
+                    }
+
+                    context.Emit($"LDR r0, [r{delegateReg}, #{targetOffset}] @ Load Target");
+                    int methodPtrReg = context.NextFreeRegister++;
+                    context.Emit($"LDR r{methodPtrReg}, [r{delegateReg}, #{ptrOffset}] @ Load MethodPtr");
+
+                    context.Emit($"BLX r{methodPtrReg} @ Invoke Delegate");
+                    // T1 16-bit encoding for BLX Rm -> 010001111_Rm_000
+                    context.Write16((ushort)(0x4780 | (methodPtrReg << 3)));
+
+                    context.NextFreeRegister -= 2;
+
+                    if (targetReg != 0)
+                    {
+                        EmitMovRegister(targetReg, 0, context);
+                    }
+                    return;
+                }
+
                 int regOffset = 0;
 
                 if (!methodSymbol.IsStatic)
