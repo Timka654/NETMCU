@@ -655,14 +655,55 @@ namespace NETMCUCompiler.CodeBuilder
                 int valueReg = 0;
                 ASMInstructions.EmitExpression(node.Right, valueReg, context);
 
+                var arrayTypeSymbol = context.SemanticModel.GetTypeInfo(elementAccess.Expression).Type as IArrayTypeSymbol;
+                var elType = arrayTypeSymbol?.ElementType;
+
+                int elementSize = 4; // Assume 4 bytes for now
+                if (elType != null)
+                {
+                    if (elType.SpecialType == SpecialType.System_Byte || elType.SpecialType == SpecialType.System_SByte || elType.SpecialType == SpecialType.System_Boolean) elementSize = 1;
+                    else if (elType.SpecialType == SpecialType.System_Int16 || elType.SpecialType == SpecialType.System_UInt16 || elType.SpecialType == SpecialType.System_Char) elementSize = 2;
+                    else if (elType.SpecialType == SpecialType.System_Int64 || elType.SpecialType == SpecialType.System_UInt64 || elType.SpecialType == SpecialType.System_Double) elementSize = 8;
+                    else if (elType.TypeKind == TypeKind.Struct)
+                        elementSize = System.Math.Max(1, elType.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4);
+                }
+
                 if (node.IsKind(SyntaxKind.SimpleAssignmentExpression))
                 {
-                    context.Emit($"STR r{valueReg}, [r{destAddrReg}, #0]");
+                    if (elementSize == 1)
+                    {
+                        context.Emit($"STRB r{valueReg}, [r{destAddrReg}, #0]");
+                        context.Write16((ushort)(0x7000 | ((destAddrReg & 0x7) << 3) | (valueReg & 0x7)));
+                    }
+                    else if (elementSize == 2)
+                    {
+                        context.Emit($"STRH r{valueReg}, [r{destAddrReg}, #0]");
+                        context.Write16((ushort)(0x8000 | ((destAddrReg & 0x7) << 3) | (valueReg & 0x7)));
+                    }
+                    else
+                    {
+                        context.Emit($"STR r{valueReg}, [r{destAddrReg}, #0]");
+                        context.Write16((ushort)(0x6000 | ((destAddrReg & 0x7) << 3) | (valueReg & 0x7)));
+                    }
                 }
                 else
                 {
                     int tmpRead = context.NextFreeRegister++;
-                    context.Emit($"LDR r{tmpRead}, [r{destAddrReg}, #0]");
+                    if (elementSize == 1)
+                    {
+                        context.Emit($"LDRB r{tmpRead}, [r{destAddrReg}, #0]");
+                        context.Write16((ushort)(0x7800 | ((destAddrReg & 0x7) << 3) | (tmpRead & 0x7)));
+                    }
+                    else if (elementSize == 2)
+                    {
+                        context.Emit($"LDRH r{tmpRead}, [r{destAddrReg}, #0]");
+                        context.Write16((ushort)(0x8800 | ((destAddrReg & 0x7) << 3) | (tmpRead & 0x7)));
+                    }
+                    else
+                    {
+                        context.Emit($"LDR r{tmpRead}, [r{destAddrReg}, #0]");
+                        context.Write16((ushort)(0x6800 | ((destAddrReg & 0x7) << 3) | (tmpRead & 0x7)));
+                    }
 
                     SyntaxKind opKind = node.Kind() switch
                     {
@@ -676,7 +717,21 @@ namespace NETMCUCompiler.CodeBuilder
                     if (opKind != SyntaxKind.None)
                     {
                         ASMInstructions.EmitArithmeticOp(opKind, tmpRead, tmpRead, valueReg, context);
-                        context.Emit($"STR r{tmpRead}, [r{destAddrReg}, #0]");
+                        if (elementSize == 1)
+                        {
+                            context.Emit($"STRB r{tmpRead}, [r{destAddrReg}, #0]");
+                            context.Write16((ushort)(0x7000 | ((destAddrReg & 0x7) << 3) | (tmpRead & 0x7)));
+                        }
+                        else if (elementSize == 2)
+                        {
+                            context.Emit($"STRH r{tmpRead}, [r{destAddrReg}, #0]");
+                            context.Write16((ushort)(0x8000 | ((destAddrReg & 0x7) << 3) | (tmpRead & 0x7)));
+                        }
+                        else
+                        {
+                            context.Emit($"STR r{tmpRead}, [r{destAddrReg}, #0]");
+                            context.Write16((ushort)(0x6000 | ((destAddrReg & 0x7) << 3) | (tmpRead & 0x7)));
+                        }
                     }
                     context.NextFreeRegister--;
                 }

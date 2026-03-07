@@ -126,6 +126,11 @@ namespace devmcu
         {
             int[] data = new int[] { 10, 42, 3, 4, 5, 101 };
             int result = ProcessArray(data); 
+
+            int[][] nested = new int[2][];
+            nested[0] = new int[] { 1, 2 };
+            nested[1] = new int[] { 3, 4, 5 };
+            int n = nested[1][2];
         }
 
         public static void TestBoxingAndCasting()
@@ -179,6 +184,9 @@ namespace devmcu
             // 2. Настраиваем PC13 на выход
             GPIO.SetMode(GPIO_Port.PortC, LED_PIN, GPIO_Mode.OutputPushPull);
 
+            ABC.Process<int>(42);
+            ABC.Process<string>("test generics");
+
             try
             {
 
@@ -209,7 +217,12 @@ namespace devmcu
     {
         public static void TestMethod()
         { 
-        
+
+        }
+
+        public static T Process<T>(T value)
+        {
+            return value;
         }
     }
 }

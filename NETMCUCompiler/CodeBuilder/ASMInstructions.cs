@@ -9,6 +9,108 @@ namespace NETMCUCompiler.CodeBuilder
 {
     public class ASMInstructions
     {
+        private static void EmitArrayCreation(InitializerExpressionSyntax initializer, ExpressionSyntax sizeExpr, ITypeSymbol typeSymbol, int targetReg, MethodCompilationContext context, int tempOffset)
+        {
+            int lenReg = context.NextFreeRegister++;
+            if (sizeExpr != null && !(sizeExpr is OmittedArraySizeExpressionSyntax)) {
+                EmitExpression(sizeExpr, lenReg, context, tempOffset);
+            } else if (initializer != null) {
+                EmitMovImmediate(lenReg, initializer.Expressions.Count, context);
+            } else {
+                EmitMovImmediate(lenReg, 0, context);
+            }
+
+            int elementSize = 4; // default
+            if (typeSymbol is IArrayTypeSymbol arrayType)
+            {
+                var elType = arrayType.ElementType;
+                if (elType.SpecialType == SpecialType.System_Byte || elType.SpecialType == SpecialType.System_SByte || elType.SpecialType == SpecialType.System_Boolean) elementSize = 1;
+                else if (elType.SpecialType == SpecialType.System_Int16 || elType.SpecialType == SpecialType.System_UInt16 || elType.SpecialType == SpecialType.System_Char) elementSize = 2;
+                else if (elType.SpecialType == SpecialType.System_Int64 || elType.SpecialType == SpecialType.System_UInt64 || elType.SpecialType == SpecialType.System_Double) elementSize = 8;
+                else if (elType.TypeKind == TypeKind.Struct)
+                    elementSize = Math.Max(1, elType.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4);
+            }
+
+            int sizeReg = context.NextFreeRegister++;
+            bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
+            int headerSize = typeHeader ? 8 : 4;
+
+            EmitMovImmediate(sizeReg, elementSize, context);
+            EmitArithmeticOp(SyntaxKind.MultiplyExpression, sizeReg, lenReg, sizeReg, context);
+            EmitOpWithImmediate(SyntaxKind.AddExpression, sizeReg, sizeReg, headerSize, context);
+
+            EmitMovRegister(0, sizeReg, context);
+            EmitCall("NETMCU__Memory__Alloc", context, isStatic: true, isNative: true);
+
+            if (typeSymbol != null && typeHeader)
+            {
+                string targetName = typeSymbol.ToDisplayString();
+                string symbolName = context.Class.Global.RegisterTypeLiteral(typeSymbol);
+                context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
+
+                int tmpReg = context.NextFreeRegister++;
+                context.Emit($"@ Write TypeHeader for array {targetName}");
+                context.Emit($"LDR r{tmpReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
+                context.Bin.Write(new byte[8], 0, 8);
+                context.Emit($"STR r{tmpReg}, [r0, #0]");
+                context.NextFreeRegister--;
+
+                context.Emit($"STR r{lenReg}, [r0, #4] @ Array Length");
+            } 
+            else 
+            {
+                context.Emit($"STR r{lenReg}, [r0, #0] @ Array Length");
+            }
+
+            int arrayAllocReg = targetReg == 0 ? context.NextFreeRegister++ : targetReg;
+            if (arrayAllocReg != 0) EmitMovRegister(arrayAllocReg, 0, context);
+
+            if (initializer != null && initializer.Expressions.Count > 0) 
+            {
+                int valReg = context.NextFreeRegister++;
+                int idxReg = context.NextFreeRegister++;
+                int ptrReg = context.NextFreeRegister++;
+                int iterReg = context.NextFreeRegister++;
+
+                int counter = 0;
+                foreach(var valExpr in initializer.Expressions)
+                {
+                    if (valExpr is ArrayCreationExpressionSyntax nestedArray)
+                    {
+                        var nestedTypeSymbol = context.SemanticModel.GetTypeInfo(nestedArray).Type;
+                        var nestedSizeExpr = nestedArray.Type.RankSpecifiers.FirstOrDefault()?.Sizes.FirstOrDefault();
+                        EmitArrayCreation(nestedArray.Initializer, nestedSizeExpr, nestedTypeSymbol, valReg, context, tempOffset);
+                    }
+                    else if (valExpr is ImplicitArrayCreationExpressionSyntax nestedImplArray)
+                    {
+                        var nestedTypeSymbol = context.SemanticModel.GetTypeInfo(nestedImplArray).Type;
+                        EmitArrayCreation(nestedImplArray.Initializer, null, nestedTypeSymbol, valReg, context, tempOffset);
+                    }
+                    else
+                    {
+                        EmitExpression(valExpr, valReg, context, tempOffset);
+                    }
+
+                    EmitMovImmediate(idxReg, counter, context);
+                    EmitMovImmediate(iterReg, elementSize, context);
+                    EmitArithmeticOp(SyntaxKind.MultiplyExpression, idxReg, idxReg, iterReg, context);
+                    EmitOpWithImmediate(SyntaxKind.AddExpression, idxReg, idxReg, headerSize, context);
+                    EmitArithmeticOp(SyntaxKind.AddExpression, ptrReg, arrayAllocReg, idxReg, context);
+
+                    if (elementSize == 1) context.Emit($"STRB r{valReg}, [r{ptrReg}, #0]");
+                    else if (elementSize == 2) context.Emit($"STRH r{valReg}, [r{ptrReg}, #0]");
+                    else context.Emit($"STR r{valReg}, [r{ptrReg}, #0]"); // Ignoring 8-byte structs for now 
+
+                    counter++;
+                }
+
+                context.NextFreeRegister -= 4;
+            }
+
+            if (targetReg == 0) context.NextFreeRegister--; // arrayAllocReg
+            context.NextFreeRegister -= 2; // sizeReg, lenReg
+        }
+
         private static void EmitDelegateCreation(IMethodSymbol targetMethod, ExpressionSyntax nodeExpr, ITypeSymbol delegateType, int targetReg, MethodCompilationContext context, int tempOffset)
         {
             int size = context.Class.Global.BuildingContext.Options?.TypeHeader == true ? 12 : 8; // delegate size is 8 bytes + 4 for header
@@ -312,13 +414,13 @@ namespace NETMCUCompiler.CodeBuilder
                 // Загрузка адреса массива/указателя
                 EmitExpression(elementAccess.Expression, targetReg, context, tempOffset);
 
-                // Вычисление индекса в temp
-                int indexReg = tempOffset + 1;
+                // Вычисление индекса
+                int indexReg = context.NextFreeRegister++;
                 var arg = elementAccess.ArgumentList.Arguments[0]; // Пока 1D массивы
-                EmitExpression(arg.Expression, indexReg, context, indexReg);
+                EmitExpression(arg.Expression, indexReg, context, tempOffset);
 
                 // Check bounds: index >= Length -> Trap
-                int lengthReg = indexReg + 1;
+                int lengthReg = context.NextFreeRegister++;
                 bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
                 int lengthOffset = typeHeader ? 4 : 0;
 
@@ -340,11 +442,23 @@ namespace NETMCUCompiler.CodeBuilder
                 EmitCall("NETMCU_Throw", context, isStatic: true, isNative: true);
                 context.MarkLabel(okLabel);
 
+                var arrayTypeSymbol = context.SemanticModel.GetTypeInfo(elementAccess.Expression).Type as IArrayTypeSymbol;
+                var elType = arrayTypeSymbol?.ElementType;
+
+                int elementSize = 4; // Assume 4 bytes for now
+                if (elType != null)
+                {
+                    if (elType.SpecialType == SpecialType.System_Byte || elType.SpecialType == SpecialType.System_SByte || elType.SpecialType == SpecialType.System_Boolean) elementSize = 1;
+                    else if (elType.SpecialType == SpecialType.System_Int16 || elType.SpecialType == SpecialType.System_UInt16 || elType.SpecialType == SpecialType.System_Char) elementSize = 2;
+                    else if (elType.SpecialType == SpecialType.System_Int64 || elType.SpecialType == SpecialType.System_UInt64 || elType.SpecialType == SpecialType.System_Double) elementSize = 8;
+                    else if (elType.TypeKind == TypeKind.Struct)
+                        elementSize = Math.Max(1, elType.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4);
+                }
+
                 // Array header and element size
                 int headerSize = typeHeader ? 8 : 4; 
-                int elementSize = 4; // Assume 4 bytes for now
 
-                int sizeReg = indexReg + 1;
+                int sizeReg = context.NextFreeRegister++;
                 EmitMovImmediate(sizeReg, elementSize, context);
                 EmitArithmeticOp(SyntaxKind.MultiplyExpression, indexReg, indexReg, sizeReg, context);
 
@@ -352,6 +466,8 @@ namespace NETMCUCompiler.CodeBuilder
 
                 // Складываем адрес и смещение
                 EmitArithmeticOp(SyntaxKind.AddExpression, targetReg, targetReg, indexReg, context);
+
+                context.NextFreeRegister -= 3; // Release indexReg, lengthReg, sizeReg
                 return;
             }
 
@@ -821,6 +937,53 @@ namespace NETMCUCompiler.CodeBuilder
 
                 // 4. Финал
                 context.MarkLabel(endLabel);
+            }
+            else if (expr is ElementAccessExpressionSyntax elementAccess)
+            {
+                int addrReg = context.NextFreeRegister++;
+                EmitAddressOf(elementAccess, addrReg, context, tempOffset);
+
+                var arrayTypeSymbol = context.SemanticModel.GetTypeInfo(elementAccess.Expression).Type as IArrayTypeSymbol;
+                var elType = arrayTypeSymbol?.ElementType;
+
+                int elementSize = 4; // Assume 4 bytes for now
+                if (elType != null)
+                {
+                    if (elType.SpecialType == SpecialType.System_Byte || elType.SpecialType == SpecialType.System_SByte || elType.SpecialType == SpecialType.System_Boolean) elementSize = 1;
+                    else if (elType.SpecialType == SpecialType.System_Int16 || elType.SpecialType == SpecialType.System_UInt16 || elType.SpecialType == SpecialType.System_Char) elementSize = 2;
+                    else if (elType.SpecialType == SpecialType.System_Int64 || elType.SpecialType == SpecialType.System_UInt64 || elType.SpecialType == SpecialType.System_Double) elementSize = 8;
+                    else if (elType.TypeKind == TypeKind.Struct)
+                        elementSize = Math.Max(1, elType.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4);
+                }
+
+                if (elementSize == 1)
+                {
+                    context.Emit($"LDRB r{targetReg}, [r{addrReg}, #0]");
+                    context.Write16((ushort)(0x7800 | ((addrReg & 0x7) << 3) | (targetReg & 0x7)));
+                }
+                else if (elementSize == 2)
+                {
+                    context.Emit($"LDRH r{targetReg}, [r{addrReg}, #0]");
+                    context.Write16((ushort)(0x8800 | ((addrReg & 0x7) << 3) | (targetReg & 0x7)));
+                }
+                else
+                {
+                    context.Emit($"LDR r{targetReg}, [r{addrReg}, #0]");
+                    context.Write16((ushort)(0x6800 | ((addrReg & 0x7) << 3) | (targetReg & 0x7)));
+                }
+
+                context.NextFreeRegister--;
+            }
+            else if (expr is ArrayCreationExpressionSyntax arrayCreation)
+            {
+                var typeSymbol = context.SemanticModel.GetTypeInfo(arrayCreation).Type;
+                var sizeExpr = arrayCreation.Type.RankSpecifiers.FirstOrDefault()?.Sizes.FirstOrDefault();
+                EmitArrayCreation(arrayCreation.Initializer, sizeExpr, typeSymbol, targetReg, context, tempOffset);
+            }
+            else if (expr is ImplicitArrayCreationExpressionSyntax implicitArray)
+            {
+                var typeSymbol = context.SemanticModel.GetTypeInfo(implicitArray).Type;
+                EmitArrayCreation(implicitArray.Initializer, null, typeSymbol, targetReg, context, tempOffset);
             }
             else if (expr is ObjectCreationExpressionSyntax objectCreation)
             {
