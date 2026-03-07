@@ -104,6 +104,7 @@ namespace NETMCUCompiler.CodeBuilder
                 .Cast<SyntaxNode>()
                 .Concat(rootDesc.OfType<LocalFunctionStatementSyntax>())
                 .Concat(rootDesc.OfType<ConstructorDeclarationSyntax>())
+                .Concat(rootDesc.OfType<AccessorDeclarationSyntax>())
                 .Where(method =>
                 {
                     var containingMethod = method.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault();
@@ -126,26 +127,32 @@ namespace NETMCUCompiler.CodeBuilder
                 .Select(x =>
                 {
 
-                    var p = GetFullNodeName(x.Parent);
+                    var parentTypeNode = x.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
+                    if (parentTypeNode == null && x is LocalFunctionStatementSyntax localFunc)
+                    {
+                        var parentMethod = localFunc.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault();
+                        parentTypeNode = parentMethod?.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
+                    }
+                    var p = parentTypeNode != null ? GetFullNodeName(parentTypeNode) : null;
 
                     TypeCompilationContext tcc = null;
 
-                    if (x.Parent is ClassDeclarationSyntax)
+                    if (parentTypeNode is ClassDeclarationSyntax)
                     {
                         if (!classes.TryGetValue(p, out tcc))
                             throw new Exception($"Не удалось найти класс {p}");
                     }
-                    else if (x.Parent is StructDeclarationSyntax)
+                    else if (parentTypeNode is StructDeclarationSyntax)
                     {
                         if (!structs.TryGetValue(p, out tcc))
                             throw new Exception($"Не удалось найти структуру {p}");
                     }
-                    else if (x.Parent is BlockSyntax bs && bs.Parent is MethodDeclarationSyntax) { }
-                    else throw new Exception($"Родительский узел метода должен быть классом или структурой, найдено: {x.Parent.GetType().FullName}");
+                    else if (x.Parent is GlobalStatementSyntax) { }
+                    else if (parentTypeNode != null) throw new Exception($"Родительский узел метода должен быть классом или структурой, найдено: {parentTypeNode.GetType().FullName}");
 
-                    var csi = model.GetDeclaredSymbol(x);
+                    var csi = model.GetDeclaredSymbol(x) as IMethodSymbol;
 
-                    var c = new MethodCompilationContext(x) { Name = csi.ToDisplayString(), ParentContext = tcc };
+                    var c = new MethodCompilationContext(x, csi) { Name = csi?.ToDisplayString() ?? "UnknownMethod", ParentContext = tcc };
 
                     return c;
                 })

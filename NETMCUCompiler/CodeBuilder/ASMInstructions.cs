@@ -797,7 +797,7 @@ namespace NETMCUCompiler.CodeBuilder
         }
         public static void EmitMethodEpilogue(MethodCompilationContext context)
         {
-            context.Emit("Main_exit:"); // Метка для быстрых выходов (return)
+            context.Emit($"{context.Name}_exit:"); // Метка для быстрых выходов (return)
             context.Emit("POP {r4-r11, pc}");
 
             // Бинарный код для POP {r4-r11, pc} 

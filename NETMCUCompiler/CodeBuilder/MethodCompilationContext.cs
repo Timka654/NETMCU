@@ -22,24 +22,17 @@ namespace NETMCUCompiler.CodeBuilder
 
         public bool IgnoreMethodCompilation => ParentContext is TypeCompilationContext typeCompilation && typeCompilation.CompilerType;
 
-        public MethodCompilationContext(SyntaxNode methodSyntax)
+        public MethodCompilationContext(SyntaxNode methodSyntax, IMethodSymbol symbol)
         {
             MethodSyntax = methodSyntax;
 
-            if (MethodSyntax is BaseMethodDeclarationSyntax methodDecl)
+            if (symbol != null)
             {
-                IsPublic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword));
-                IsStatic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
-                NativeName = methodDecl.AttributeLists
-                    .SelectMany(x => x.Attributes)
-                    .FirstOrDefault(x => x.Name.ToString() == "NativeCall")?
-                    .ArgumentList?
-                    .Arguments
-                    .FirstOrDefault()?
-                    .Expression
-                    .GetText()
-                    .ToString()
-                    .Trim('"');
+                IsPublic = symbol.DeclaredAccessibility == Accessibility.Public;
+                IsStatic = symbol.IsStatic;
+                NativeName = symbol.GetAttributes()
+                    .FirstOrDefault(a => a.AttributeClass?.Name.Contains("NativeCall") == true)?
+                    .ConstructorArguments.FirstOrDefault().Value?.ToString();
             }
         }
 
