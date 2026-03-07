@@ -576,7 +576,7 @@ namespace NETMCUCompiler.CodeBuilder
             {
                 // Обычное x = y;
                 if (destReg != srcReg)
-                    context.Emit($"MOV R{destReg}, R{srcReg}");
+                    ASMInstructions.EmitMovRegister(destReg, srcReg, context);
             }
             else
             {
