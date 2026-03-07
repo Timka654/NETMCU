@@ -487,6 +487,102 @@ namespace NETMCUCompiler.CodeBuilder
         }
         public static void EmitExpression(ExpressionSyntax expr, int targetReg, MethodCompilationContext context, int tempOffset = 0)
         {
+            var typeInfo = context.SemanticModel.GetTypeInfo(expr);
+            var conversion = context.SemanticModel.GetConversion(expr);
+
+            if (conversion.IsBoxing)
+            {
+                Console.WriteLine($"[DEBUG-CONV] BOXING on {expr}");
+                int valReg = context.NextFreeRegister++;
+                EmitExpressionInternal(expr, valReg, context, tempOffset);
+
+                var typeSymbol = typeInfo.Type;
+                int size = 4;
+                if (typeSymbol != null)
+                {
+                    if (typeSymbol.SpecialType == SpecialType.System_Byte || typeSymbol.SpecialType == SpecialType.System_SByte || typeSymbol.SpecialType == SpecialType.System_Boolean) size = 1;
+                    else if (typeSymbol.SpecialType == SpecialType.System_Int16 || typeSymbol.SpecialType == SpecialType.System_UInt16 || typeSymbol.SpecialType == SpecialType.System_Char) size = 2;
+                    else if (typeSymbol.SpecialType == SpecialType.System_Int64 || typeSymbol.SpecialType == SpecialType.System_UInt64 || typeSymbol.SpecialType == SpecialType.System_Double) size = 8;
+                    else if (typeSymbol.SpecialType == SpecialType.System_Int32 || typeSymbol.SpecialType == SpecialType.System_UInt32 || typeSymbol.SpecialType == SpecialType.System_Single || typeSymbol.SpecialType == SpecialType.System_IntPtr) size = 4;
+                    else if (typeSymbol.TypeKind == TypeKind.Struct)
+                        size = Math.Max(1, typeSymbol.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4);
+                }
+
+                int allocSize = size + 4; // Header + payload
+                EmitMovImmediate(0, allocSize, context);
+                EmitCall("NETMCU__Memory__Alloc", context, isStatic: true, isNative: true);
+
+                if (typeSymbol != null && context.Class.Global.BuildingContext.Options?.TypeHeader == true)
+                {
+                    string targetName = typeSymbol.ToDisplayString();
+                    string symbolName = context.Class.Global.RegisterTypeLiteral(typeSymbol);
+                    context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
+
+                    int tmpReg = context.NextFreeRegister++;
+                    context.Emit($"@ Write TypeHeader for Boxed {targetName}");
+                    context.Emit($"LDR r{tmpReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
+                    context.Bin.Write(new byte[8], 0, 8);
+                    context.Emit($"STR r{tmpReg}, [r0, #0]");
+                    context.NextFreeRegister--;
+                }
+
+                if (size == 1) context.Emit($"STRB r{valReg}, [r0, #4]");
+                else if (size == 2) context.Emit($"STRH r{valReg}, [r0, #4]");
+                else context.Emit($"STR r{valReg}, [r0, #4]");
+
+                if (targetReg != 0) EmitMovRegister(targetReg, 0, context);
+                context.NextFreeRegister--;
+                return;
+            }
+
+            if (conversion.IsUnboxing) // Wait, if the cast expression is Unboxing?
+            {
+                Console.WriteLine($"[DEBUG-CONV] UNBOXING on {expr}");
+                // Unboxing means we have an object reference (with a header) and want its payload
+                int objReg = context.NextFreeRegister++;
+                EmitExpressionInternal(expr, objReg, context, tempOffset);
+
+                // For simplicity, we assume we just read offset 4 (after type header)
+                var destType = typeInfo.ConvertedType;
+                int size = 4;
+                if (destType != null)
+                {
+                    if (destType.SpecialType == SpecialType.System_Byte || destType.SpecialType == SpecialType.System_SByte || destType.SpecialType == SpecialType.System_Boolean) size = 1;
+                    else if (destType.SpecialType == SpecialType.System_Int16 || destType.SpecialType == SpecialType.System_UInt16 || destType.SpecialType == SpecialType.System_Char) size = 2;
+                }
+
+                if (size == 1) context.Emit($"LDRB r{targetReg}, [r{objReg}, #4]");
+                else if (size == 2) context.Emit($"LDRH r{targetReg}, [r{objReg}, #4]");
+                else context.Emit($"LDR r{targetReg}, [r{objReg}, #4]");
+
+                context.NextFreeRegister--;
+                return;
+            }
+
+            var typeSymbolInfo = context.SemanticModel.GetTypeInfo(expr);
+            if (expr is CastExpressionSyntax ce)
+            {
+                var inputType = context.SemanticModel.GetTypeInfo(ce.Expression).Type;
+                var targetType = context.SemanticModel.GetTypeInfo(ce.Type).Type;
+
+                if (inputType != null && targetType != null)
+                {
+                    var cc = context.SemanticModel.Compilation.ClassifyConversion(inputType, targetType);
+                    if (cc.IsUnboxing)
+                    {
+                        Console.WriteLine($"[DEBUG-CONV] CAST UNBOXING on {expr} from {inputType.Name} to {targetType.Name}");
+                        EmitExpressionInternal(ce.Expression, targetReg, context, tempOffset);
+                        context.Emit($"LDR r{targetReg}, [r{targetReg}, #4] @ CastUnbox Extract Payload");
+                        return;
+                    }
+                }
+            }
+
+            EmitExpressionInternal(expr, targetReg, context, tempOffset);
+        }
+
+        private static void EmitExpressionInternal(ExpressionSyntax expr, int targetReg, MethodCompilationContext context, int tempOffset = 0)
+        {
             var symbolInfo = context.SemanticModel.GetSymbolInfo(expr);
             var possibleMethod = symbolInfo.Symbol as IMethodSymbol ?? context.SemanticModel.GetMemberGroup(expr).FirstOrDefault() as IMethodSymbol;
 
@@ -765,9 +861,33 @@ namespace NETMCUCompiler.CodeBuilder
             }
             else if (expr is CastExpressionSyntax castExpr)
             {
-                // Для начала просто вычисляем внутреннее выражение (например, приведение типа/enum к int).
-                // Сложные приведения ссылочных типов пока опускаем
+                var targetType = context.SemanticModel.GetTypeInfo(castExpr.Type).Type;
+
                 EmitExpression(castExpr.Expression, targetReg, context, tempOffset);
+
+                if (targetType != null)
+                {
+                    if (targetType.SpecialType == SpecialType.System_Byte)
+                    {
+                        context.Emit($"UXTB r{targetReg}, r{targetReg}");
+                        context.Write16((ushort)(0xB2C0 | ((targetReg & 0x7) << 3) | (targetReg & 0x7)));
+                    }
+                    else if (targetType.SpecialType == SpecialType.System_SByte)
+                    {
+                        context.Emit($"SXTB r{targetReg}, r{targetReg}");
+                        context.Write16((ushort)(0xB240 | ((targetReg & 0x7) << 3) | (targetReg & 0x7)));
+                    }
+                    else if (targetType.SpecialType == SpecialType.System_UInt16)
+                    {
+                        context.Emit($"UXTH r{targetReg}, r{targetReg}");
+                        context.Write16((ushort)(0xB280 | ((targetReg & 0x7) << 3) | (targetReg & 0x7)));
+                    }
+                    else if (targetType.SpecialType == SpecialType.System_Int16)
+                    {
+                        context.Emit($"SXTH r{targetReg}, r{targetReg}");
+                        context.Write16((ushort)(0xB200 | ((targetReg & 0x7) << 3) | (targetReg & 0x7)));
+                    }
+                }
             }
             else if (expr is MemberAccessExpressionSyntax memberAccess)
             {

@@ -45,6 +45,11 @@ namespace devmcu
             int[] data = new int[] { v1, v2, 3, 4, 5 };
             int result = ProcessArray(data);
 
+            object boxedResult = result; // Implicit Box
+            int unboxedResult = (int)boxedResult; // Explicit Unbox
+
+            byte castedResult = (byte)unboxedResult; // Narrowing Cast
+
             HAL.Init();
 
             WriteLine("Hello, NETMCU!");
