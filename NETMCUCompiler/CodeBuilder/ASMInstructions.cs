@@ -242,6 +242,25 @@ namespace NETMCUCompiler.CodeBuilder
                 }
             }
 
+            else if (expr is ElementAccessExpressionSyntax elementAccess)
+            {
+                // Загрузка адреса массива/указателя
+                EmitExpression(elementAccess.Expression, targetReg, context, tempOffset);
+
+                // Вычисление индекса в temp
+                int indexReg = tempOffset + 1;
+                var arg = elementAccess.ArgumentList.Arguments[0]; // Пока 1D массивы
+                EmitExpression(arg.Expression, indexReg, context, indexReg);
+
+                int sizeReg = indexReg + 1;
+                EmitMovImmediate(sizeReg, 4, context);
+                EmitArithmeticOp(SyntaxKind.MultiplyExpression, indexReg, indexReg, sizeReg, context);
+
+                // Складываем адрес и смещение: addr = addr + (index * 4)
+                EmitArithmeticOp(SyntaxKind.AddExpression, targetReg, targetReg, indexReg, context);
+                return;
+            }
+
             context.Emit($"@ TODO: EmitAddressOf not fully supported for {expr}");
             EmitMovImmediate(targetReg, 0, context);
         }
@@ -556,8 +575,13 @@ namespace NETMCUCompiler.CodeBuilder
                     }
                     else
                     {
-                        // TODO: proper ref processing for prop/field/array increment
-                        context.Emit($"@ TODO: complex prefix ++/-- not fully supported yet");
+                        var kind = prefix.IsKind(SyntaxKind.PreIncrementExpression) ? SyntaxKind.AddExpression : SyntaxKind.SubtractExpression;
+                        int addrReg = tempOffset + 1;
+                        EmitAddressOf(prefix.Operand, addrReg, context, tempOffset + 1);
+
+                        EmitMemoryAccess(true, targetReg, addrReg, 0, context);
+                        EmitOpWithImmediate(kind, targetReg, targetReg, 1, context);
+                        EmitMemoryAccess(false, targetReg, addrReg, 0, context);
                     }
                 }
             }
@@ -574,8 +598,16 @@ namespace NETMCUCompiler.CodeBuilder
                 }
                 else
                 {
-                    // TODO: proper ref processing
-                    context.Emit($"@ TODO: complex postfix ++/-- not fully supported yet");
+                    var kind = postfix.IsKind(SyntaxKind.PostIncrementExpression) ? SyntaxKind.AddExpression : SyntaxKind.SubtractExpression;
+                    int addrReg = tempOffset + 1;
+                    EmitAddressOf(postfix.Operand, addrReg, context, tempOffset + 1);
+
+                    EmitMemoryAccess(true, targetReg, addrReg, 0, context);
+
+                    int tmpReg = tempOffset + 2;
+                    EmitMovRegister(tmpReg, targetReg, context);
+                    EmitOpWithImmediate(kind, tmpReg, tmpReg, 1, context);
+                    EmitMemoryAccess(false, tmpReg, addrReg, 0, context);
                 }
             }
             else if (expr is ElementAccessExpressionSyntax elementAccess)

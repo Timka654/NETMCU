@@ -131,13 +131,6 @@ namespace NETMCUCompiler.CodeBuilder
 
         public override void VisitForEachStatement(ForEachStatementSyntax node)
         {
-            // Упрощенная реализация foreach, считающая, что это массив или нечто, к чему можно обращаться по индексу
-            // foreach (var item in collection) ->
-            // var _collection = collection; int _i = 0; while(_i < _collection.Length) { var item = _collection[_i]; ... _i++; }
-
-            // Здесь мы используем абстракцию (пока считаем, что Length = 0 или делаем условный переход)
-            // По-хорошему нужно парсить GetEnumerator() или Array
-
             string startLabel = context.NextLabel("FOREACH_START");
             string endLabel = context.NextLabel("FOREACH_END");
             string incLabel = context.NextLabel("FOREACH_INC");
@@ -147,48 +140,36 @@ namespace NETMCUCompiler.CodeBuilder
             var collectionType = context.SemanticModel.GetTypeInfo(node.Expression).Type;
             bool isArray = collectionType?.TypeKind == TypeKind.Array;
 
-            // Вычисляем адрес коллекции
-            int collectionReg = context.NextFreeRegister++;
-            ASMInstructions.EmitExpression(node.Expression, collectionReg, context);
-
-            // Индекс
-            int indexReg = context.NextFreeRegister++;
-            ASMInstructions.EmitMovImmediate(indexReg, 0, context);
-
-            // Размер коллекции
-            int lengthReg = context.NextFreeRegister++;
+            int indexReg = 0;
+            int lengthReg = 0;
+            int collectionReg = 0;
+            int enumReg = 0;
+            int itemReg = context.NextFreeRegister++;
+            context.RegisterMap[node.Identifier.Text] = itemReg;
 
             if (isArray)
             {
-                // Вычитаем 4 из указателя, чтобы прочитать Length
+                collectionReg = context.NextFreeRegister++;
+                ASMInstructions.EmitExpression(node.Expression, collectionReg, context);
+
+                indexReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovImmediate(indexReg, 0, context);
+
+                lengthReg = context.NextFreeRegister++;
+
                 int fourReg = context.NextFreeRegister++;
                 ASMInstructions.EmitMovImmediate(fourReg, 4, context);
 
                 int lenAddrReg = context.NextFreeRegister++;
                 ASMInstructions.EmitArithmeticOp(SyntaxKind.SubtractExpression, lenAddrReg, collectionReg, fourReg, context);
                 context.Emit($"LDR r{lengthReg}, [r{lenAddrReg}, #0] @ Read array length");
-
                 context.NextFreeRegister -= 2;
-            }
-            else
-            {
-                // Для IEnum/IList - не реализовано
-                context.Emit($"@ TODO: IEnumerable foreach не реализован");
-            }
 
-            context.MarkLabel(startLabel);
+                context.MarkLabel(startLabel);
 
-            // Условие: index < length
-            ASMInstructions.EmitCompare(indexReg, lengthReg, context);
-            ASMInstructions.EmitBranch(endLabel, "GE", context);
+                ASMInstructions.EmitCompare(indexReg, lengthReg, context);
+                ASMInstructions.EmitBranch(endLabel, "GE", context);
 
-            // Читаем элемент: item = collection[index]
-            int itemReg = context.NextFreeRegister++;
-            context.RegisterMap[node.Identifier.Text] = itemReg;
-
-            if (isArray)
-            {
-                // collection + (index * 4)
                 int offsetReg = context.NextFreeRegister++;
                 ASMInstructions.EmitMovRegister(offsetReg, indexReg, context);
                 int elemSizeReg = context.NextFreeRegister++;
@@ -202,14 +183,44 @@ namespace NETMCUCompiler.CodeBuilder
                 context.Emit($"LDR r{itemReg}, [r{targetAddrReg}, #0]");
                 context.NextFreeRegister -= 3;
             }
+            else
+            {
+                var foreachInfo = context.SemanticModel.GetForEachStatementInfo(node);
+                if (foreachInfo.GetEnumeratorMethod == null || foreachInfo.MoveNextMethod == null || foreachInfo.CurrentProperty == null)
+                    throw new Exception("Не удалось разрешить GetEnumerator, MoveNext или Current для foreach");
 
-            // Тело
+                ASMInstructions.EmitExpression(node.Expression, 0, context);
+
+                string getEnumTarget = foreachInfo.GetEnumeratorMethod.ToDisplayString();
+                ASMInstructions.EmitCall(getEnumTarget, context, foreachInfo.GetEnumeratorMethod.IsStatic);
+
+                enumReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovRegister(enumReg, 0, context);
+
+                context.MarkLabel(startLabel);
+
+                ASMInstructions.EmitMovRegister(0, enumReg, context);
+                string moveNextTarget = foreachInfo.MoveNextMethod.ToDisplayString();
+                ASMInstructions.EmitCall(moveNextTarget, context, foreachInfo.MoveNextMethod.IsStatic);
+
+                ASMInstructions.EmitCompareImmediate(0, 0, context);
+                ASMInstructions.EmitBranch(endLabel, "EQ", context);
+
+                ASMInstructions.EmitMovRegister(0, enumReg, context);
+                string currentTarget = foreachInfo.CurrentProperty.GetMethod.ToDisplayString();
+                ASMInstructions.EmitCall(currentTarget, context, foreachInfo.CurrentProperty.IsStatic);
+
+                ASMInstructions.EmitMovRegister(itemReg, 0, context);
+            }
+
             Visit(node.Statement);
 
             context.MarkLabel(incLabel);
 
-            // ++index
-            ASMInstructions.EmitOpWithImmediate(SyntaxKind.AddExpression, indexReg, indexReg, 1, context);
+            if (isArray)
+            {
+                ASMInstructions.EmitOpWithImmediate(SyntaxKind.AddExpression, indexReg, indexReg, 1, context);
+            }
 
             ASMInstructions.EmitJump(startLabel, context);
 
@@ -217,8 +228,15 @@ namespace NETMCUCompiler.CodeBuilder
 
             _loopContexts.Pop();
 
-            context.NextFreeRegister -= 3; // itemReg, lengthReg, indexReg, collectionReg
-            context.NextFreeRegister--;
+            if (isArray)
+            {
+                context.NextFreeRegister -= 3; // lengthReg, indexReg, collectionReg
+            }
+            else
+            {
+                context.NextFreeRegister -= 1; // enumReg
+            }
+            context.NextFreeRegister--; // itemReg
         }
 
         public override void VisitTryStatement(TryStatementSyntax node)
