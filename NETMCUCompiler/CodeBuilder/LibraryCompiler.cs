@@ -369,7 +369,7 @@ namespace NETMCUCompiler.CodeBuilder
             method.Class.Global.Backend.GenerateMethodPrologue(method, !isStatic, parameters);
 
             // Пользуемся нашим старым добрым билдером для внутренностей
-            var builder = new Stm32MethodBuilder(method);
+            var builder = new MethodAstVisitor(method);
             if (body != null)
                 builder.Visit(body);
             if (expressionBody != null)

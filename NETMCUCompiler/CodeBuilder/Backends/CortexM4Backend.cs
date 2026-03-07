@@ -131,6 +131,127 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             popLoopContext();
         }
 
+        public override void GenerateForEachStatement(MethodCompilationContext context, ForEachStatementSyntax node, Action generateBody, Action<string, string> registerLoopContext, Action popLoopContext)
+        {
+            string startLabel = context.NextLabel("FOREACH_START");
+            string endLabel = context.NextLabel("FOREACH_END");
+            string incLabel = context.NextLabel("FOREACH_INC");
+
+            registerLoopContext(endLabel, incLabel);
+
+            var collectionType = context.SemanticModel.GetTypeInfo(node.Expression).Type;
+            bool isArray = collectionType?.TypeKind == TypeKind.Array;
+
+            int indexReg = 0;
+            int lengthReg = 0;
+            int collectionReg = 0;
+            int enumReg = 0;
+            int itemReg = context.NextFreeRegister++;
+            context.RegisterMap[node.Identifier.Text] = itemReg;
+
+            if (isArray)
+            {
+                collectionReg = context.NextFreeRegister++;
+                ASMInstructions.EmitExpression(node.Expression, collectionReg, context);
+
+                indexReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovImmediate(indexReg, 0, context);
+
+                lengthReg = context.NextFreeRegister++;
+
+                int fourReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovImmediate(fourReg, 4, context);
+
+                int lenAddrReg = context.NextFreeRegister++;
+                ASMInstructions.EmitArithmeticOp(SyntaxKind.SubtractExpression, lenAddrReg, collectionReg, fourReg, context);
+                context.Emit($"@ Read array length");
+                ASMInstructions.EmitMemoryAccess(true, lengthReg, lenAddrReg, 0, context);
+                context.NextFreeRegister -= 2;
+
+                context.MarkLabel(startLabel);
+
+                ASMInstructions.EmitCompare(indexReg, lengthReg, context);
+                ASMInstructions.EmitBranch(endLabel, "GE", context);
+
+                int offsetReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovRegister(offsetReg, indexReg, context);
+                int elemSizeReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovImmediate(elemSizeReg, 4, context);
+                ASMInstructions.EmitArithmeticOp(SyntaxKind.MultiplyExpression, offsetReg, offsetReg, elemSizeReg, context);
+
+                int targetAddrReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovRegister(targetAddrReg, collectionReg, context);
+                ASMInstructions.EmitArithmeticOp(SyntaxKind.AddExpression, targetAddrReg, targetAddrReg, offsetReg, context);
+
+                ASMInstructions.EmitMemoryAccess(true, itemReg, targetAddrReg, 0, context);
+                context.NextFreeRegister -= 3;
+            }
+            else
+            {
+                var foreachInfo = context.SemanticModel.GetForEachStatementInfo(node);
+                if (foreachInfo.GetEnumeratorMethod == null || foreachInfo.MoveNextMethod == null || foreachInfo.CurrentProperty == null)
+                    throw new Exception("Не удалось разрешить GetEnumerator, MoveNext или Current для foreach");
+
+                ASMInstructions.EmitExpression(node.Expression, 0, context);
+
+                string getEnumTarget = foreachInfo.GetEnumeratorMethod.ToDisplayString();
+                ASMInstructions.EmitCall(getEnumTarget, context, foreachInfo.GetEnumeratorMethod.IsStatic);
+
+                enumReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovRegister(enumReg, 0, context);
+
+                context.MarkLabel(startLabel);
+
+                ASMInstructions.EmitMovRegister(0, enumReg, context);
+                string moveNextTarget = foreachInfo.MoveNextMethod.ToDisplayString();
+                ASMInstructions.EmitCall(moveNextTarget, context, foreachInfo.MoveNextMethod.IsStatic);
+
+                ASMInstructions.EmitCompareImmediate(0, 0, context);
+                ASMInstructions.EmitBranch(endLabel, "EQ", context);
+
+                ASMInstructions.EmitMovRegister(0, enumReg, context);
+                string currentTarget = foreachInfo.CurrentProperty.GetMethod.ToDisplayString();
+                ASMInstructions.EmitCall(currentTarget, context, foreachInfo.CurrentProperty.IsStatic);
+
+                ASMInstructions.EmitMovRegister(itemReg, 0, context);
+            }
+
+            generateBody();
+
+            context.MarkLabel(incLabel);
+
+            if (isArray)
+            {
+                ASMInstructions.EmitOpWithImmediate(SyntaxKind.AddExpression, indexReg, indexReg, 1, context);
+            }
+
+            ASMInstructions.EmitJump(startLabel, context);
+
+            context.MarkLabel(endLabel);
+
+            popLoopContext();
+
+            if (isArray)
+            {
+                context.NextFreeRegister -= 3; // lengthReg, indexReg, collectionReg
+            }
+            else
+            {
+                context.NextFreeRegister -= 1; // enumReg
+            }
+            context.NextFreeRegister--; // itemReg
+        }
+
+        public override void GenerateBreakStatement(MethodCompilationContext context, string breakLabel)
+        {
+            ASMInstructions.EmitJump(breakLabel, context);
+        }
+
+        public override void GenerateContinueStatement(MethodCompilationContext context, string continueLabel)
+        {
+            ASMInstructions.EmitJump(continueLabel, context);
+        }
+
         public override void GenerateTryStatement(MethodCompilationContext context, Action generateTryBlock, Action<CatchClauseSyntax> generateCatchBlock, Action generateFinallyBlock, SyntaxList<CatchClauseSyntax> catches, FinallyClauseSyntax finallyClause)
         {
             context.Emit("@ TRY BLOCK START");
@@ -629,6 +750,31 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                     throw new Exception($"Переменная {varName} не объявлена");
                 }
             }
+        }
+
+        public override void GeneratePrefixUnaryExpression(MethodCompilationContext context, PrefixUnaryExpressionSyntax node)
+        {
+            ASMInstructions.EmitExpression(node, 0, context);
+        }
+
+        public override void GeneratePostfixUnaryExpression(MethodCompilationContext context, PostfixUnaryExpressionSyntax node)
+        {
+            ASMInstructions.EmitExpression(node, 0, context);
+        }
+
+        public override void GenerateLiteralExpression(MethodCompilationContext context, LiteralExpressionSyntax node)
+        {
+            ASMInstructions.EmitExpression(node, 0, context);
+        }
+
+        public override void GenerateIdentifierName(MethodCompilationContext context, IdentifierNameSyntax node)
+        {
+            ASMInstructions.EmitExpression(node, 0, context);
+        }
+
+        public override void GenerateInvocationExpression(MethodCompilationContext context, InvocationExpressionSyntax node)
+        {
+            ASMInstructions.EmitExpression(node, 0, context);
         }
     }
 }

@@ -20,6 +20,12 @@ namespace NETMCUCompiler.CodeBuilder.Backends
 
         public abstract void GenerateForStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateInit, Action generateBody, Action generateIncrementor, Action<string, string> registerLoopContext, Action popLoopContext);
 
+        public abstract void GenerateForEachStatement(MethodCompilationContext context, ForEachStatementSyntax node, Action generateBody, Action<string, string> registerLoopContext, Action popLoopContext);
+
+        public abstract void GenerateBreakStatement(MethodCompilationContext context, string breakLabel);
+
+        public abstract void GenerateContinueStatement(MethodCompilationContext context, string continueLabel);
+
         public abstract void GenerateTryStatement(MethodCompilationContext context, Action generateTryBlock, Action<CatchClauseSyntax> generateCatchBlock, Action generateFinallyBlock, SyntaxList<CatchClauseSyntax> catches, FinallyClauseSyntax finallyClause);
 
         public abstract void GenerateThrowStatement(MethodCompilationContext context, ExpressionSyntax expression);
@@ -31,5 +37,15 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         public abstract void GenerateVariableDeclaration(MethodCompilationContext context, VariableDeclarationSyntax declaration);
 
         public abstract void GenerateAssignmentExpression(MethodCompilationContext context, AssignmentExpressionSyntax node);
+
+        public abstract void GeneratePrefixUnaryExpression(MethodCompilationContext context, PrefixUnaryExpressionSyntax node);
+
+        public abstract void GeneratePostfixUnaryExpression(MethodCompilationContext context, PostfixUnaryExpressionSyntax node);
+
+        public abstract void GenerateLiteralExpression(MethodCompilationContext context, LiteralExpressionSyntax node);
+
+        public abstract void GenerateIdentifierName(MethodCompilationContext context, IdentifierNameSyntax node);
+
+        public abstract void GenerateInvocationExpression(MethodCompilationContext context, InvocationExpressionSyntax node);
     }
 }
