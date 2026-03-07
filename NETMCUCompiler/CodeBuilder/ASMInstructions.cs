@@ -417,6 +417,64 @@ namespace NETMCUCompiler.CodeBuilder
             }
             else if (expr is ParenthesizedExpressionSyntax paren)
                 EmitExpression(paren.Expression, targetReg, context, tempOffset);
+            else if (expr is CastExpressionSyntax castExpr)
+            {
+                // Для начала просто вычисляем внутреннее выражение (например, приведение типа/enum к int).
+                // Сложные приведения ссылочных типов пока опускаем
+                EmitExpression(castExpr.Expression, targetReg, context, tempOffset);
+            }
+            else if (expr is MemberAccessExpressionSyntax memberAccess)
+            {
+                // Проверяем, не является ли это константой (например, Enum: GPIO_Port.PortA)
+                if (TryGetAsConstant(memberAccess, context, out object constVal))
+                {
+                    EmitMovImmediate(targetReg, Convert.ToInt32(constVal), context);
+                    return;
+                }
+
+                // Иначе это чтение свойства объекта или поля (obj.Property или obj.Field)
+                var symbolInfo = context.SemanticModel.GetSymbolInfo(memberAccess).Symbol;
+                if (symbolInfo is IPropertySymbol propertySymbol)
+                {
+                    // Обращение к свойству транслируется в вызов метода get_Property
+                    if (propertySymbol.GetMethod != null)
+                    {
+                        if (!propertySymbol.IsStatic)
+                        {
+                            // "this" для свойства
+                            EmitExpression(memberAccess.Expression, 0, context, tempOffset);
+                        }
+
+                        string nativeFunctionName = propertySymbol.GetMethod.GetAttributes()
+                            .FirstOrDefault(a => a.AttributeClass?.Name.Contains("NativeCall") == true)?
+                            .ConstructorArguments.FirstOrDefault().Value?.ToString();
+
+                        string callTarget = nativeFunctionName ?? propertySymbol.GetMethod.ToDisplayString();
+                        EmitCall(callTarget, context, propertySymbol.IsStatic, nativeFunctionName != null);
+
+                        if (targetReg != 0)
+                        {
+                            EmitMovRegister(targetReg, 0, context);
+                        }
+                    }
+                }
+                else if (symbolInfo is IFieldSymbol fieldSymbol)
+                {
+                    // Чтение поля из памяти (или стека, если структура)
+                    // TODO: Полноценное чтение полей
+                    string structName = memberAccess.Expression.ToString();
+                    string fieldName = memberAccess.Name.ToString();
+
+                    if (context.StackMap.TryGetValue(structName, out var stackVar))
+                    {
+                        if (stackVar.Metadata.FieldOffsets.TryGetValue(fieldName, out int fieldOffset))
+                        {
+                            context.Emit($"LDR r{targetReg}, [SP, #{stackVar.StackOffset + fieldOffset}] @ Load {structName}.{fieldName}");
+                            // Binary TODO encoding
+                        }
+                    }
+                }
+            }
             else if (expr is ConditionalExpressionSyntax ternary)
             {
                 // Создаем уникальные метки для этого конкретного тернарника
@@ -528,8 +586,8 @@ namespace NETMCUCompiler.CodeBuilder
 
                 if (!methodSymbol.IsStatic)
                 {
-                    if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
-                        EmitExpression(memberAccess.Expression, 0, context, tempOffset);
+                    if (invocation.Expression is MemberAccessExpressionSyntax invokationMemberAccess)
+                        EmitExpression(invokationMemberAccess.Expression, 0, context, tempOffset);
                     else
                         context.Emit("MOV r0, r4"); // fallback "this"
                     regOffset = 1;

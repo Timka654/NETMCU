@@ -129,6 +129,95 @@ namespace NETMCUCompiler.CodeBuilder
             _loopContexts.Pop();
         }
 
+        public override void VisitForEachStatement(ForEachStatementSyntax node)
+        {
+            // Упрощенная реализация foreach, считающая, что это массив или нечто, к чему можно обращаться по индексу
+            // foreach (var item in collection) ->
+            // var _collection = collection; int _i = 0; while(_i < _collection.Length) { var item = _collection[_i]; ... _i++; }
+
+            // Здесь мы используем абстракцию (пока считаем, что Length = 0 или делаем условный переход)
+            // По-хорошему нужно парсить GetEnumerator() или Array
+
+            string startLabel = context.NextLabel("FOREACH_START");
+            string endLabel = context.NextLabel("FOREACH_END");
+            string incLabel = context.NextLabel("FOREACH_INC");
+
+            _loopContexts.Push((endLabel, incLabel));
+
+            var collectionType = context.SemanticModel.GetTypeInfo(node.Expression).Type;
+            bool isArray = collectionType?.TypeKind == TypeKind.Array;
+
+            // Вычисляем адрес коллекции
+            int collectionReg = context.NextFreeRegister++;
+            ASMInstructions.EmitExpression(node.Expression, collectionReg, context);
+
+            // Индекс
+            int indexReg = context.NextFreeRegister++;
+            ASMInstructions.EmitMovImmediate(indexReg, 0, context);
+
+            // Размер коллекции
+            int lengthReg = context.NextFreeRegister++;
+
+            if (isArray)
+            {
+                // Для массива длинна лежит в памяти (пока заглушка, пусть размер задается 0 если не найдено)
+                // Формат NETMCU: например, длина перед массивом или как передается?
+                // Пока мы жестко задаем константу или загружаем из структуры массивов (предположим -4 от ptr)
+                // Сделаем условный костыль - пока что длина вычисляется как 100, либо ждем правильной реализации структур массивов.
+                context.Emit($"@ TODO: Реализовать чтение Length для массивов. Временно берем заглушку.");
+                ASMInstructions.EmitMovImmediate(lengthReg, 10, context); // Fake length
+            }
+            else
+            {
+                // Для IEnum/IList - не реализовано
+                context.Emit($"@ TODO: IEnumerable foreach не реализован");
+            }
+
+            context.Asm.AppendLine($"{startLabel}:");
+
+            // Условие: index < length
+            ASMInstructions.EmitCompare(indexReg, lengthReg, context);
+            ASMInstructions.EmitBranch(endLabel, "GE", context);
+
+            // Читаем элемент: item = collection[index]
+            int itemReg = context.NextFreeRegister++;
+            context.RegisterMap[node.Identifier.Text] = itemReg;
+
+            if (isArray)
+            {
+                // collection + (index * 4)
+                int offsetReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovRegister(offsetReg, indexReg, context);
+                int elemSizeReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovImmediate(elemSizeReg, 4, context);
+                ASMInstructions.EmitArithmeticOp(SyntaxKind.MultiplyExpression, offsetReg, offsetReg, elemSizeReg, context);
+
+                int targetAddrReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovRegister(targetAddrReg, collectionReg, context);
+                ASMInstructions.EmitArithmeticOp(SyntaxKind.AddExpression, targetAddrReg, targetAddrReg, offsetReg, context);
+
+                context.Emit($"LDR r{itemReg}, [r{targetAddrReg}, #0]");
+                context.NextFreeRegister -= 3;
+            }
+
+            // Тело
+            Visit(node.Statement);
+
+            context.Asm.AppendLine($"{incLabel}:");
+
+            // ++index
+            ASMInstructions.EmitOpWithImmediate(SyntaxKind.AddExpression, indexReg, indexReg, 1, context);
+
+            ASMInstructions.EmitJump(startLabel, context);
+
+            context.Asm.AppendLine($"{endLabel}:");
+
+            _loopContexts.Pop();
+
+            context.NextFreeRegister -= 3; // itemReg, lengthReg, indexReg, collectionReg
+            context.NextFreeRegister--;
+        }
+
         public override void VisitTryStatement(TryStatementSyntax node)
         {
             context.Emit("@ TRY BLOCK START");
@@ -561,7 +650,37 @@ namespace NETMCUCompiler.CodeBuilder
 
             if (node.Left is MemberAccessExpressionSyntax memberAccess)
             {
-                HandleStructAssignment(node, memberAccess, standardValueReg);
+                var symbolInfo = context.SemanticModel.GetSymbolInfo(node.Left).Symbol;
+                if (symbolInfo is IPropertySymbol propertySymbol && propertySymbol.SetMethod != null)
+                {
+                    // Нужно вызвать set_Property(value)
+
+                    int regOffset = 0;
+                    if (!propertySymbol.IsStatic)
+                    {
+                        // "this" вычисляем и кладем в R0
+                        ASMInstructions.EmitExpression(memberAccess.Expression, 0, context);
+                        regOffset = 1;
+                    }
+
+                    // Значение кладем в R1 (или R0, если статическое)
+                    if (standardValueReg != regOffset)
+                    {
+                        context.Emit($"MOV r{regOffset}, r{standardValueReg}");
+                        ASMInstructions.EmitMovRegister(regOffset, standardValueReg, context);
+                    }
+
+                    string nativeFunctionName = propertySymbol.SetMethod.GetAttributes()
+                        .FirstOrDefault(a => a.AttributeClass?.Name.Contains("NativeCall") == true)?
+                        .ConstructorArguments.FirstOrDefault().Value?.ToString();
+
+                    string callTarget = nativeFunctionName ?? propertySymbol.SetMethod.ToDisplayString();
+                    ASMInstructions.EmitCall(callTarget, context, propertySymbol.IsStatic, nativeFunctionName != null);
+                }
+                else
+                {
+                    HandleStructAssignment(node, memberAccess, standardValueReg);
+                }
             }
             else
             {
