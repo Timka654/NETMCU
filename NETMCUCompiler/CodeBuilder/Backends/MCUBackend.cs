@@ -802,9 +802,110 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         public abstract void EmitMemoryAccess(MethodCompilationContext context, bool isLoad, int targetReg, int baseReg, int offset);
         public abstract void EmitArithmeticOp(MethodCompilationContext context, SyntaxKind op, int target, int left, int right);
         public abstract void EmitOpWithImmediate(MethodCompilationContext context, SyntaxKind op, int target, int left, int value);
-        public abstract void EmitAddressOf(MethodCompilationContext context, ExpressionSyntax expr, int targetReg, int tempOffset = 0);
+        public abstract void EmitAddSP(MethodCompilationContext context, int targetReg, int offset);
+        
+        public virtual void EmitAddressOf(MethodCompilationContext context, ExpressionSyntax expr, int targetReg, int tempOffset = 0)
+        {
+            var symbolInfo = context.SemanticModel.GetSymbolInfo(expr).Symbol;
+
+            if (expr is IdentifierNameSyntax id)
+            {
+                string varName = id.Identifier.Text;
+                if (context.StackMap.TryGetValue(varName, out var stackVar))
+                {
+                    int offset = stackVar.StackOffset;
+                    EmitAddSP(context, targetReg, offset);
+                    return;
+                }
+            }
+            else if (expr is MemberAccessExpressionSyntax memberAccess && symbolInfo is IFieldSymbol fieldSymbol)
+            {
+                string typeName = fieldSymbol.ContainingType.ToDisplayString();
+                if (context.Class.Global.Childs.TryGetValue(typeName, out var typeCtx) && typeCtx is TypeCompilationContext tcc)
+                {
+                    if (tcc.FieldOffsets.TryGetValue(fieldSymbol.Name, out int fieldOffset))
+                    {
+                        string structName = memberAccess.Expression.ToString();
+                        int baseReg = tempOffset + 1;
+
+                        if (context.StackMap.TryGetValue(structName, out var stackVar))
+                        {
+                            // SP + stackVar.StackOffset + fieldOffset
+                            int totalOffset = stackVar.StackOffset + fieldOffset;
+                            EmitAddSP(context, targetReg, totalOffset);
+                        }
+                        else
+                        {
+                            EmitExpressionValue(context, memberAccess.Expression, baseReg);
+                            EmitOpWithImmediate(context, SyntaxKind.AddExpression, targetReg, baseReg, fieldOffset);
+                        }
+                        return;
+                    }
+                }
+            }
+
+            else if (expr is ElementAccessExpressionSyntax elementAccess)
+            {
+                // Загрузка адреса массива/указателя
+                EmitExpressionValue(context, elementAccess.Expression, targetReg);
+
+                // Вычисление индекса
+                int indexReg = context.NextFreeRegister++;
+                var arg = elementAccess.ArgumentList.Arguments[0]; // Пока 1D массивы
+                EmitExpressionValue(context, arg.Expression, indexReg);
+
+                // Check bounds: index >= Length -> Trap
+                int lengthReg = context.NextFreeRegister++;
+                int fourReg = context.NextFreeRegister++;
+                EmitMovImmediate(context, fourReg, 4);
+
+                int lenAddrReg = context.NextFreeRegister++;
+                EmitArithmeticOp(context, SyntaxKind.SubtractExpression, lenAddrReg, targetReg, fourReg);
+                
+                context.Emit($"@ Read array length");
+                EmitMemoryAccess(context, true, lengthReg, lenAddrReg, 0);
+
+                string okLabel = context.NextLabel("BOUNDS_OK");
+                EmitCompare(context, indexReg, lengthReg);
+                EmitBranch(context, okLabel, "LT"); // Index < Length is OK
+                EmitCompareImmediate(context, indexReg, 0);
+                EmitBranch(context, okLabel, "GE"); // Actually we need 0 <= Index < Length
+                // Throw IndexOutOfRange
+                EmitCall(context, "NETMCU_ThrowIndexOutOfRange", isStatic: true, isNative: true);
+                
+                context.MarkLabel(okLabel);
+                context.NextFreeRegister -= 3; // free lengthReg, fourReg, lenAddrReg
+
+                var arrayTypeSymbol = context.SemanticModel.GetTypeInfo(elementAccess.Expression).Type as IArrayTypeSymbol;
+                var elType = arrayTypeSymbol?.ElementType;
+
+                int elementSize = 4; // Assume 4 bytes for now
+                if (elType != null)
+                {
+                    if (elType.SpecialType == SpecialType.System_Byte || elType.SpecialType == SpecialType.System_SByte || elType.SpecialType == SpecialType.System_Boolean) elementSize = 1;
+                    else if (elType.SpecialType == SpecialType.System_Int16 || elType.SpecialType == SpecialType.System_UInt16 || elType.SpecialType == SpecialType.System_Char) elementSize = 2;
+                    else if (elType.SpecialType == SpecialType.System_Int64 || elType.SpecialType == SpecialType.System_UInt64 || elType.SpecialType == SpecialType.System_Double) elementSize = 8;
+                    else if (elType.TypeKind == TypeKind.Struct)
+                        elementSize = System.Math.Max(1, elType.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4);
+                }
+
+                int elemSizeReg = context.NextFreeRegister++;
+                EmitMovImmediate(context, elemSizeReg, elementSize);
+
+                EmitArithmeticOp(context, SyntaxKind.MultiplyExpression, indexReg, indexReg, elemSizeReg);
+                EmitArithmeticOp(context, SyntaxKind.AddExpression, targetReg, targetReg, indexReg);
+
+                context.NextFreeRegister -= 2; // free elemSizeReg, indexReg
+                return;
+            }
+
+            throw new Exception($"Cannot take address of expr: {expr}");
+        }
+
         public abstract void EmitCompareImmediate(MethodCompilationContext context, int reg, int imm);
 
         public abstract void ResolveJumps(MethodCompilationContext context);
+        public abstract void PatchCall(byte[] binary, int offset, int jumpOffset);
+        public abstract void PatchDataAddress(byte[] binary, int offset, uint value);
     }
 }

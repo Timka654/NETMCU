@@ -207,6 +207,9 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             binary[offset + 7] = (byte)(movtLow >> 8);
         }
 
+        public override void PatchCall(byte[] binary, int offset, int jumpOffset) => PatchThumb2BL(binary, offset, jumpOffset);
+        public override void PatchDataAddress(byte[] binary, int offset, uint value) => PatchMovwMovt(binary, offset, value);
+
         public override void GenerateTryStatement(MethodCompilationContext context, Action generateTryBlock, Action<CatchClauseSyntax> generateCatchBlock, Action generateFinallyBlock, SyntaxList<CatchClauseSyntax> catches, FinallyClauseSyntax finallyClause)
         {
             context.Emit("@ TRY BLOCK START");
@@ -219,12 +222,12 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             context.AddLoadAddress(catchLabel);
             context.Write32(0xF2AF0000); // Placeholder for ADR.W r0, label
 
-            ASMInstructions.EmitCall("NETMCU_TryPush", context, isStatic: true, isNative: true);
+            EmitCall(context, "NETMCU_TryPush", isStatic: true, isNative: true);
 
             generateTryBlock();
 
             // Если блок выполнился успешно без throw, снимаем обработчик
-            ASMInstructions.EmitCall("NETMCU_TryPop", context, isStatic: true, isNative: true);
+            EmitCall(context, "NETMCU_TryPop", isStatic: true, isNative: true);
             context.Emit($"B {endLabel}");
             context.AddJump(endLabel, false);
             context.Write16(0xE000); // branch empty
@@ -233,7 +236,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             context.MarkLabel(catchLabel);
 
             // Снимаем себя из стека обработчиков, чтобы следующий throw полетел выше
-            ASMInstructions.EmitCall("NETMCU_TryPop", context, isStatic: true, isNative: true); 
+            EmitCall(context, "NETMCU_TryPop", isStatic: true, isNative: true); 
 
             // Обрабатываем блоки catch
             foreach (var catchClause in catches)
@@ -265,7 +268,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                 context.Emit($"@ Allocation: {allocContext.VarName} -> Stack[{allocContext.StackOffset}]");
                 if (allocContext.HasInitializer)
                 {
-                    ASMInstructions.EmitMemoryAccess(false, allocContext.InitValueReg, 13, allocContext.StackOffset, context);
+                    EmitMemoryAccess(context, false, allocContext.InitValueReg, 13, allocContext.StackOffset);
                 }
             }
             else
@@ -506,7 +509,19 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             context.Bytecode((byte)(opcode >> 8));
         }
 
-        public override void EmitAddressOf(MethodCompilationContext context, ExpressionSyntax expr, int targetReg, int tempOffset = 0) => ASMInstructions.EmitAddressOf(expr, targetReg, context, tempOffset);
+        public override void EmitAddSP(MethodCompilationContext context, int targetReg, int offset)
+        {
+            context.Emit($"ADD r{targetReg}, SP, #{offset}");
+            
+            // T2 ADD.W: 1111_0i10_0000_1101_0_imm3_Rd_imm8
+            uint op = 0xF20D0000u;
+            op |= ((uint)targetReg & 0xF) << 8;
+            uint i = ((uint)offset >> 11) & 1;
+            uint imm3 = ((uint)offset >> 8) & 7;
+            uint imm8 = (uint)offset & 0xFF;
+            op |= (i << 26) | (imm3 << 12) | imm8;
+            context.Write32(op);
+        }
 
         public override void EmitCompareImmediate(MethodCompilationContext context, int reg, int imm)
         {
