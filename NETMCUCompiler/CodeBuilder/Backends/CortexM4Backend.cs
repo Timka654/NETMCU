@@ -69,5 +69,65 @@ namespace NETMCUCompiler.CodeBuilder.Backends
 
             popLoopContext();
         }
+
+        public override void GenerateDoStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateBody, Action<string, string> registerLoopContext, Action popLoopContext)
+        {
+            string startLabel = context.NextLabel("DO_START");
+            string endLabel = context.NextLabel("DO_END");
+            string condLabel = context.NextLabel("DO_COND"); // Для continue
+
+            registerLoopContext(endLabel, condLabel);
+
+            context.MarkLabel(startLabel);
+
+            generateBody();
+
+            context.MarkLabel(condLabel);
+
+            // Проверяем условие. Если true -> прыгаем в начало (startLabel).
+            ASMInstructions.EmitLogicalCondition(condition, startLabel, endLabel, context);
+
+            context.MarkLabel(endLabel);
+
+            popLoopContext();
+        }
+
+        public override void GenerateForStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateInit, Action generateBody, Action generateIncrementor, Action<string, string> registerLoopContext, Action popLoopContext)
+        {
+            // 1. Инициализация (может быть объявление переменной или просто присваивание)
+            generateInit?.Invoke();
+
+            string startLabel = context.NextLabel("FOR_START");
+            string endLabel = context.NextLabel("FOR_END");
+            string incLabel = context.NextLabel("FOR_INC"); // Для continue
+
+            registerLoopContext(endLabel, incLabel);
+
+            // Метка начала
+            context.MarkLabel(startLabel);
+
+            // 2. Условие
+            if (condition != null)
+            {
+                ASMInstructions.EmitLogicalCondition(condition, "", endLabel, context);
+            }
+
+            // 3. Тело
+            generateBody?.Invoke();
+
+            // Метка инкремента (сюда будет прыгать continue, если мы его реализуем)
+            context.MarkLabel(incLabel);
+
+            // 4. Инкремент
+            generateIncrementor?.Invoke();
+
+            // 5. Прыжок на начало
+            ASMInstructions.EmitJump(startLabel, context);
+
+            // Метка выхода
+            context.MarkLabel(endLabel);
+
+            popLoopContext();
+        }
     }
 }

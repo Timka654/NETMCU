@@ -62,50 +62,17 @@ namespace NETMCUCompiler.CodeBuilder
         }
         public override void VisitForStatement(ForStatementSyntax node)
         {
-            // 1. Инициализация (может быть объявление переменной или просто присваивание)
-            if (node.Declaration != null)
-            {
-                VisitVariableDeclaration(node.Declaration);
-            }
-            foreach (var initializer in node.Initializers)
-            {
-                Visit(initializer);
-            }
-
-            string startLabel = context.NextLabel("FOR_START");
-            string endLabel = context.NextLabel("FOR_END");
-            string incLabel = context.NextLabel("FOR_INC"); // Для continue
-
-            _loopContexts.Push((endLabel, incLabel));
-
-            // Метка начала
-            context.MarkLabel(startLabel);
-
-            // 2. Условие
-            if (node.Condition != null)
-            {
-                ASMInstructions.EmitLogicalCondition(node.Condition, "", endLabel, context);
-            }
-
-            // 3. Тело
-            Visit(node.Statement);
-
-            // Метка инкремента (сюда будет прыгать continue, если мы его реализуем)
-            context.MarkLabel(incLabel);
-
-            // 4. Инкремент
-            foreach (var incrementor in node.Incrementors)
-            {
-                Visit(incrementor);
-            }
-
-            // 5. Прыжок на начало
-            ASMInstructions.EmitJump(startLabel, context);
-
-            // Метка выхода
-            context.MarkLabel(endLabel);
-
-            _loopContexts.Pop();
+            context.Class.Global.Backend.GenerateForStatement(context, node.Condition,
+                generateInit: () => {
+                    if (node.Declaration != null) VisitVariableDeclaration(node.Declaration);
+                    foreach (var initializer in node.Initializers) Visit(initializer);
+                },
+                generateBody: () => Visit(node.Statement),
+                generateIncrementor: () => {
+                    foreach (var incrementor in node.Incrementors) Visit(incrementor);
+                },
+                registerLoopContext: (endLabel, startLabel) => _loopContexts.Push((endLabel, startLabel)),
+                popLoopContext: () => _loopContexts.Pop());
         }
 
         public override void VisitForEachStatement(ForEachStatementSyntax node)
@@ -297,24 +264,10 @@ namespace NETMCUCompiler.CodeBuilder
 
         public override void VisitDoStatement(DoStatementSyntax node)
         {
-            string startLabel = context.NextLabel("DO_START");
-            string endLabel = context.NextLabel("DO_END");
-            string condLabel = context.NextLabel("DO_COND"); // Для continue
-
-            _loopContexts.Push((endLabel, condLabel));
-
-            context.MarkLabel(startLabel);
-
-            Visit(node.Statement);
-
-            context.MarkLabel(condLabel);
-
-            // Проверяем условие. Если true -> прыгаем в начало (startLabel).
-            ASMInstructions.EmitLogicalCondition(node.Condition, startLabel, endLabel, context);
-
-            context.MarkLabel(endLabel);
-
-            _loopContexts.Pop();
+            context.Class.Global.Backend.GenerateDoStatement(context, node.Condition,
+                generateBody: () => Visit(node.Statement),
+                registerLoopContext: (endLabel, startLabel) => _loopContexts.Push((endLabel, startLabel)),
+                popLoopContext: () => _loopContexts.Pop());
         }
 
         public override void VisitReturnStatement(ReturnStatementSyntax node)
