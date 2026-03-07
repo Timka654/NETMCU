@@ -2,9 +2,15 @@
 
 namespace devmcu
 {
-    class BaseClass
+    interface ITestDevice
+    {
+        int Ping(int val);
+    }
+
+    class BaseClass : ITestDevice
     {
         public virtual int GetValue() { return 10; }
+        public int Ping(int val) { return val + 1; }
     }
 
     class DerivedClass : BaseClass
@@ -32,23 +38,53 @@ namespace devmcu
             return sum;
         }
 
-        public static void Main()
+        public static void RunTests()
+        {
+            TestDelegates();
+            TestVirtualsAndInterfaces();
+            TestArrays();
+            TestBoxingAndCasting();
+        }
+
+        public static void TestDelegates()
         {
             DelegateTest.Test();
+        }
 
+        public static void TestVirtualsAndInterfaces()
+        {
             BaseClass b1 = new BaseClass();
             BaseClass b2 = new DerivedClass();
 
-            int v1 = b1.GetValue();
-            int v2 = b2.GetValue();
+            int v1 = b1.GetValue(); // 10
+            int v2 = b2.GetValue(); // 42
 
-            int[] data = new int[] { v1, v2, 3, 4, 5 };
-            int result = ProcessArray(data);
+            ITestDevice device = b2;
+            int interfaceR = device.Ping(100); // 101
+        }
 
-            object boxedResult = result; // Implicit Box
-            int unboxedResult = (int)boxedResult; // Explicit Unbox
+        public static void TestArrays()
+        {
+            int[] data = new int[] { 10, 42, 3, 4, 5, 101 };
+            int result = ProcessArray(data); 
+        }
 
-            byte castedResult = (byte)unboxedResult; // Narrowing Cast
+        public static void TestBoxingAndCasting()
+        {
+            int result = 165;
+            object boxedResult = result; 
+            int unboxedResult = (int)boxedResult; 
+
+            bool isInt = boxedResult is int; 
+            BaseClass b2 = new DerivedClass();
+            BaseClass b3 = b2 as DerivedClass; 
+
+            short narrowed = (short)unboxedResult;
+        }
+
+        public static void Main()
+        {
+            RunTests();
 
             HAL.Init();
 

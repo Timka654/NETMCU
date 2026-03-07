@@ -318,7 +318,33 @@ namespace NETMCUCompiler
                 }
                 else
                 {
-                    writer.Write((uint)0); // Structs usually don't have vtables allocated here (unless boxed, but let's keep it 0)
+                    writer.Write((uint)0); // VTable Count = 0
+                }
+
+                // Interface Table
+                var allInterfaces = t.Value.AllInterfaces;
+                writer.Write((uint)allInterfaces.Length); // Interface Count
+
+                foreach (var iface in allInterfaces)
+                {
+                    // InterfaceTypePtr
+                    var ifaceSymbolId = compilationContext.RegisterTypeLiteral(iface);
+                    vtablePatches.Add(((int)ms.Position, ifaceSymbolId));
+                    writer.Write((uint)0); // Placeholder 4 bytes for interface ptr
+
+                    var ifaceMethods = iface.GetMembers().OfType<IMethodSymbol>().ToList();
+                    writer.Write((uint)ifaceMethods.Count); // MethodCount
+
+                    foreach (var imethod in ifaceMethods)
+                    {
+                        var implMethod = t.Value.FindImplementationForInterfaceMember(imethod) as IMethodSymbol;
+                        if (implMethod != null && !implMethod.IsAbstract)
+                        {
+                            var implName = implMethod.ToDisplayString();
+                            vtablePatches.Add(((int)ms.Position, implName));
+                        }
+                        writer.Write((uint)0); // Placeholder 4 bytes for method ptr
+                    }
                 }
             }
 
@@ -452,7 +478,21 @@ namespace NETMCUCompiler
             List<(int OffsetInSection, string TargetMethod)> vtablePatches = new();
             var typeDataBytes = BuildTypeDataSection(out var typeDataOffsets, globalSymbolTable, vtablePatches);
 
-            // Path vtable pointers within typeDataBytes!
+            uint typeDataSectionAddr = flashBaseAddress + (uint)finalImage.Position + (uint)((4 - finalImage.Position % 4) % 4);
+
+            // Add typeData symbols to global table first, so vtable patches can find type references
+            foreach (var entry in typeDataOffsets)
+            {
+                var symbolName = entry.Key;
+                var offsetInSection = entry.Value;
+                var absoluteAddr = typeDataSectionAddr + offsetInSection;
+                if (!globalSymbolTable.TryAdd(symbolName, absoluteAddr))
+                {
+                    throw new Exception($"Duplicate symbol in global symbol table: {symbolName}");
+                }
+            }
+
+            // Patch vtable pointers within typeDataBytes
             foreach(var patch in vtablePatches)
             {
                 if (globalSymbolTable.TryGetValue(patch.TargetMethod, out uint methAddr))
@@ -465,25 +505,12 @@ namespace NETMCUCompiler
                 }
                 else
                 {
-                    Console.WriteLine($"[WARNING] Virtual method {patch.TargetMethod} not found in global symbol table (could be abstract or missing implementation). Filling with 0.");
+                    Console.WriteLine($"[WARNING] Reference {patch.TargetMethod} not found in global symbol table. Filling with 0.");
                 }
             }
 
             while (finalImage.Position % 4 != 0) finalImage.WriteByte(0);
-
-            uint typeDataSectionAddr = flashBaseAddress + (uint)finalImage.Position;
             finalImage.Write(typeDataBytes, 0, typeDataBytes.Length);
-
-            foreach (var entry in typeDataOffsets)
-            {
-                var symbolName = entry.Key;
-                var offsetInSection = entry.Value;
-                var absoluteAddr = typeDataSectionAddr + offsetInSection;
-                if (!globalSymbolTable.TryAdd(symbolName, absoluteAddr))
-                {
-                    throw new Exception($"Duplicate symbol in global symbol table: {symbolName}");
-                }
-            }
 
             byte[] binary = finalImage.ToArray();
 

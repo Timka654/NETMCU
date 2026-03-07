@@ -684,7 +684,59 @@ namespace NETMCUCompiler.CodeBuilder
             }
             else if (expr is BinaryExpressionSyntax binary)
             {
-                if (binary.IsKind(SyntaxKind.LogicalAndExpression) ||
+                if (binary.IsKind(SyntaxKind.AsExpression) || binary.IsKind(SyntaxKind.IsExpression))
+                {
+                    bool isAs = binary.IsKind(SyntaxKind.AsExpression);
+                    var targetType = context.SemanticModel.GetTypeInfo(binary.Right).Type;
+
+                    int objReg = context.NextFreeRegister++;
+                    EmitExpressionInternal(binary.Left, objReg, context, tempOffset);
+
+                    string endLabel = context.NextLabel(isAs ? "AS_END" : "IS_END");
+                    string falseLabel = context.NextLabel(isAs ? "AS_FALSE" : "IS_FALSE");
+
+                    EmitCompareImmediate(objReg, 0, context);
+                    EmitBranch(falseLabel, "EQ", context);
+
+                    if (targetType != null && context.Class.Global.BuildingContext.Options?.TypeHeader == true)
+                    {
+                        int typeReg = context.NextFreeRegister++;
+                        context.Emit($"LDR r{typeReg}, [r{objReg}, #0] @ read TypeHeader");
+
+                        string symbolName = context.Class.Global.RegisterTypeLiteral(targetType);
+                        context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
+
+                        int targetTypeReg = context.NextFreeRegister++;
+                        context.Emit($"LDR r{targetTypeReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
+                        context.Bin.Write(new byte[8], 0, 8);
+
+                        EmitCompare(typeReg, targetTypeReg, context);
+                        EmitBranch(falseLabel, "NE", context);
+
+                        context.NextFreeRegister -= 2;
+
+                        if (isAs)
+                        {
+                            if (targetReg != objReg) EmitMovRegister(targetReg, objReg, context);
+                        }
+                        else
+                        {
+                            EmitMovImmediate(targetReg, 1, context);
+                        }
+                        EmitJump(endLabel, context);
+                    }
+                    else
+                    {
+                        EmitJump(falseLabel, context);
+                    }
+
+                    context.MarkLabel(falseLabel);
+                    EmitMovImmediate(targetReg, 0, context);
+
+                    context.MarkLabel(endLabel);
+                    context.NextFreeRegister--;
+                }
+                else if (binary.IsKind(SyntaxKind.LogicalAndExpression) ||
                     binary.IsKind(SyntaxKind.LogicalOrExpression) ||
                     binary.IsKind(SyntaxKind.EqualsExpression) ||
                     binary.IsKind(SyntaxKind.NotEqualsExpression) ||
@@ -712,6 +764,66 @@ namespace NETMCUCompiler.CodeBuilder
                 {
                     // ТЕПЕРЬ МЫ ЗАКРЫВАЕМ ЭТО:
                     EmitArithmetic(binary, targetReg, context, tempOffset);
+                }
+            }
+            else if (expr is IsPatternExpressionSyntax isPattern)
+            {
+                ITypeSymbol targetType = null;
+                if (isPattern.Pattern is DeclarationPatternSyntax declPattern) targetType = context.SemanticModel.GetTypeInfo(declPattern.Type).Type;
+                else if (isPattern.Pattern is TypePatternSyntax typePattern) targetType = context.SemanticModel.GetTypeInfo(typePattern.Type).Type;
+                else targetType = context.SemanticModel.GetTypeInfo(isPattern.Pattern).Type ?? context.SemanticModel.GetTypeInfo(isPattern.Pattern).ConvertedType;
+
+                int objReg = context.NextFreeRegister++;
+                EmitExpressionInternal(isPattern.Expression, objReg, context, tempOffset);
+
+                string endLabel = context.NextLabel("IS_PAT_END");
+                string falseLabel = context.NextLabel("IS_PAT_FALSE");
+
+                EmitCompareImmediate(objReg, 0, context);
+                EmitBranch(falseLabel, "EQ", context);
+
+                if (targetType != null && context.Class.Global.BuildingContext.Options?.TypeHeader == true)
+                {
+                    int typeReg = context.NextFreeRegister++;
+                    context.Emit($"LDR r{typeReg}, [r{objReg}, #0] @ read TypeHeader");
+
+                    string symbolName = context.Class.Global.RegisterTypeLiteral(targetType);
+                    context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
+
+                    int targetTypeReg = context.NextFreeRegister++;
+                    context.Emit($"LDR r{targetTypeReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
+                    context.Bin.Write(new byte[8], 0, 8);
+
+                    EmitCompare(typeReg, targetTypeReg, context);
+                    EmitBranch(falseLabel, "NE", context);
+
+                    context.NextFreeRegister -= 2;
+
+                    EmitMovImmediate(targetReg, 1, context);
+                    EmitJump(endLabel, context);
+                }
+                else
+                {
+                    EmitJump(falseLabel, context);
+                }
+
+                context.MarkLabel(falseLabel);
+                EmitMovImmediate(targetReg, 0, context);
+
+                context.MarkLabel(endLabel);
+                context.NextFreeRegister--;
+
+                if (isPattern.Pattern is DeclarationPatternSyntax dPattern && dPattern.Designation is SingleVariableDesignationSyntax singleVar)
+                {
+                    var symbol = context.SemanticModel.GetDeclaredSymbol(singleVar);
+                    if (symbol != null && context.StackMap.TryGetValue(symbol.Name, out var stackVar))
+                    {
+                        context.MarkLabel(context.NextLabel("PAT_DEF_ASSIGN"));
+                        // Pattern assigns variable implicitly on TRUE condition:
+                        // Instead of full flow rewriting, let's inject simple assign if true? 
+                        // But wait! If 'is' is false, Pattern does not assign. We need a more advanced architecture 
+                        // for scope blocks. We leave assigning to complex pattern matching for later.
+                    }
                 }
             }
             else if (expr is PrefixUnaryExpressionSyntax prefix)
@@ -1247,11 +1359,13 @@ namespace NETMCUCompiler.CodeBuilder
                 }
 
                 bool isBaseCall = invocation.Expression is MemberAccessExpressionSyntax m && m.Expression is BaseExpressionSyntax;
-                bool isVirtualCall = !methodSymbol.IsStatic && !isBaseCall && 
+                bool isInterfaceCall = !methodSymbol.IsStatic && !isBaseCall && methodSymbol.ContainingType.TypeKind == TypeKind.Interface;
+                bool isVirtualCall = !methodSymbol.IsStatic && !isBaseCall && !isInterfaceCall && 
                                      (methodSymbol.IsVirtual || methodSymbol.IsAbstract || methodSymbol.IsOverride);
 
                 int regOffset = 0;
                 int instanceReg = 0;
+                int interfaceFuncPtrReg = 0;
 
                 if (!methodSymbol.IsStatic)
                 {
@@ -1264,6 +1378,31 @@ namespace NETMCUCompiler.CodeBuilder
                         context.Emit($"MOV r{instanceReg}, r4"); // fallback "this"
 
                     regOffset = 1;
+
+                    if (isInterfaceCall)
+                    {
+                        var ifaceMethods = methodSymbol.ContainingType.GetMembers().OfType<IMethodSymbol>().ToList();
+                        int methodIndex = ifaceMethods.IndexOf(methodSymbol.OriginalDefinition);
+                        if (methodIndex < 0) methodIndex = ifaceMethods.IndexOf(methodSymbol);
+
+                        context.Emit($"LDR r0, [r{instanceReg}, #0] @ read TypeMetadata");
+
+                        string symbolName = context.Class.Global.RegisterTypeLiteral(methodSymbol.ContainingType);
+                        context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
+                        context.Emit($"LDR r1, ={symbolName} ; (placeholder for MOVW/MOVT)");
+                        context.Bin.Write(new byte[8], 0, 8);
+
+                        EmitMovImmediate(2, methodIndex, context);
+
+                        var typeHelperType = context.SemanticModel.Compilation.GetTypeByMetadataName("System.MCU.TypeHelper");
+                        var findInterfaceMethod = typeHelperType?.GetMembers("FindInterfaceMethod").OfType<IMethodSymbol>().FirstOrDefault();
+                        string helperTarget = findInterfaceMethod != null ? findInterfaceMethod.ToDisplayString() : "System.MCU.TypeHelper.FindInterfaceMethod(System.IntPtr, System.IntPtr, int)";
+
+                        EmitCall(helperTarget, context, isStatic: true, isNative: false);
+
+                        interfaceFuncPtrReg = context.NextFreeRegister++;
+                        EmitMovRegister(interfaceFuncPtrReg, 0, context);
+                    }
                 }
                 else
                 {
@@ -1314,7 +1453,14 @@ namespace NETMCUCompiler.CodeBuilder
                 string nativeFunctionName = nativeAttr?.ConstructorArguments.FirstOrDefault().Value?.ToString();
                 string callTarget = nativeFunctionName ?? methodSymbol.ToDisplayString();
 
-                if (isVirtualCall && nativeAttr == null)
+                if (isInterfaceCall)
+                {
+                    context.Emit($"BLX r{interfaceFuncPtrReg} @ call Interface Method");
+                    // T1 16-bit encoding for BLX Rm -> 010001111_Rm_000
+                    context.Write16((ushort)(0x4780 | (interfaceFuncPtrReg << 3)));
+                    context.NextFreeRegister--; // interfaceFuncPtrReg
+                }
+                else if (isVirtualCall && nativeAttr == null)
                 {
                     int vtableIndex = VTableBuilder.GetVTableIndex(methodSymbol);
                     if (vtableIndex < 0) throw new Exception($"VTable index not found for virtual method {methodSymbol}");

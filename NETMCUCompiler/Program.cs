@@ -22,6 +22,13 @@ namespace NETMCUCompiler
             if (!File.Exists(projectPath))
                 projectPath = Path.GetFullPath("devmcu/devmcu.csproj");
 
+            // Example simple arguments trace
+            bool shouldFlash = args.Contains("--flash");
+            ProgrammerType progType = ProgrammerType.STFlash;
+            if (args.Any(a => a.Contains("openocd"))) progType = ProgrammerType.OpenOCD;
+            else if (args.Any(a => a.Contains("cubeprogrammer"))) progType = ProgrammerType.STM32CubeProgrammer;
+            else if (args.Any(a => a.Contains("stlinkcli"))) progType = ProgrammerType.STLinkCLI;
+
             // 1. Инициализация MSBuild (нужно вызвать один раз при старте)
             if (!MSBuildLocator.IsRegistered)
                 MSBuildLocator.RegisterDefaults();
@@ -45,6 +52,20 @@ namespace NETMCUCompiler
                 return;
             }
             Console.WriteLine("Compile succeeded");
+
+            if (shouldFlash) 
+            {
+                string binPath = Path.Combine(sc.StartupProject.mcuBinPath, "output.bin");
+
+                uint flashBase = 0x08000000;
+                var flashBaseStr = sc.StartupProject.Options?.Configurations?["FLASH_BASE_ADDRESS"];
+                if (flashBaseStr != null) {
+                    flashBase = flashBaseStr.StartsWith("0x") ? uint.Parse(flashBaseStr.TrimStart('0', 'x'), System.Globalization.NumberStyles.HexNumber) : uint.Parse(flashBaseStr);
+                }
+
+                Console.WriteLine($"\nFlashing the firmware using {progType}...");
+                FirmwareFlasher.Flash(binPath, flashBase, progType);
+            }
         }
     }
 

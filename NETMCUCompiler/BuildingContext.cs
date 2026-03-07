@@ -42,7 +42,7 @@ namespace NETMCUCompiler
 
         bool needsRebuildCore;
 
-        string mcuObjCorePath, mcuCorePath, tempDockerfilePath, dockerContent, commonCorePath, commonOldPath, buildDir, mcuBinPath;
+        public string mcuObjCorePath, mcuCorePath, tempDockerfilePath, dockerContent, commonCorePath, commonOldPath, buildDir, mcuBinPath;
 
 
         CompilationContext? compilationContext;
