@@ -330,6 +330,33 @@ namespace NETMCUCompiler.CodeBuilder
             if (_loopContexts.Count == 0) throw new Exception("Оператор continue вне цикла");
             ASMInstructions.EmitJump(_loopContexts.Peek().continueLabel, context);
         }
+        public override void VisitPrefixUnaryExpression(PrefixUnaryExpressionSyntax node)
+        {
+            HandleIncrementDecrement(node.Operand, node.Kind());
+        }
+
+        public override void VisitPostfixUnaryExpression(PostfixUnaryExpressionSyntax node)
+        {
+            HandleIncrementDecrement(node.Operand, node.Kind());
+        }
+
+        private void HandleIncrementDecrement(ExpressionSyntax operand, SyntaxKind kind)
+        {
+            if (operand is IdentifierNameSyntax id && context.RegisterMap.TryGetValue(id.Identifier.Text, out int reg))
+            {
+                if (kind == SyntaxKind.PreIncrementExpression || kind == SyntaxKind.PostIncrementExpression)
+                {
+                    // reg = reg + 1
+                    ASMInstructions.EmitOpWithImmediate(SyntaxKind.AddExpression, reg, reg, 1, context);
+                }
+                else if (kind == SyntaxKind.PreDecrementExpression || kind == SyntaxKind.PostDecrementExpression)
+                {
+                    // reg = reg - 1
+                    ASMInstructions.EmitOpWithImmediate(SyntaxKind.SubtractExpression, reg, reg, 1, context);
+                }
+            }
+        }
+
         public override void VisitExpressionStatement(ExpressionStatementSyntax node)
         {
             //if (node.Expression is AssignmentExpressionSyntax assignment)
@@ -481,27 +508,67 @@ namespace NETMCUCompiler.CodeBuilder
         }
         public override void VisitAssignmentExpression(AssignmentExpressionSyntax node)
         {
-            // 1. Не берем LastUsedRegister, а определяем, КУДА мы хотим получить результат.
-            // Для правой части идеально подходит R0 (стандарт ARM для возврата и параметров).
-            int valueReg = 0;
+            if (node.Left is ElementAccessExpressionSyntax elementAccess)
+            {
+                int destAddrReg = context.NextFreeRegister++;
+                ASMInstructions.EmitExpression(elementAccess.Expression, destAddrReg, context);
 
-            // 2. Генерируем код для вычисления правой части прямо в R0.
-            // Теперь (1 << pin) превратится в цепочку команд, финал которой ляжет в R0.
-            ASMInstructions.EmitExpression(node.Right, valueReg, context);
+                int indexReg = context.NextFreeRegister++;
+                ASMInstructions.EmitExpression(elementAccess.ArgumentList.Arguments[0].Expression, indexReg, context);
 
-            // 3. Теперь записываем результат из R0 по назначению
+                int sizeReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovImmediate(sizeReg, 4, context);
+                ASMInstructions.EmitArithmeticOp(SyntaxKind.MultiplyExpression, indexReg, indexReg, sizeReg, context);
+
+                ASMInstructions.EmitArithmeticOp(SyntaxKind.AddExpression, destAddrReg, destAddrReg, indexReg, context);
+
+                int valueReg = 0;
+                ASMInstructions.EmitExpression(node.Right, valueReg, context);
+
+                if (node.IsKind(SyntaxKind.SimpleAssignmentExpression))
+                {
+                    context.Emit($"STR r{valueReg}, [r{destAddrReg}, #0]");
+                }
+                else
+                {
+                    int tmpRead = context.NextFreeRegister++;
+                    context.Emit($"LDR r{tmpRead}, [r{destAddrReg}, #0]");
+
+                    SyntaxKind opKind = node.Kind() switch
+                    {
+                        SyntaxKind.AddAssignmentExpression => SyntaxKind.AddExpression,
+                        SyntaxKind.SubtractAssignmentExpression => SyntaxKind.SubtractExpression,
+                        SyntaxKind.AndAssignmentExpression => SyntaxKind.BitwiseAndExpression,
+                        SyntaxKind.OrAssignmentExpression => SyntaxKind.BitwiseOrExpression,
+                        _ => SyntaxKind.None
+                    };
+
+                    if (opKind != SyntaxKind.None)
+                    {
+                        ASMInstructions.EmitArithmeticOp(opKind, tmpRead, tmpRead, valueReg, context);
+                        context.Emit($"STR r{tmpRead}, [r{destAddrReg}, #0]");
+                    }
+                    context.NextFreeRegister--;
+                }
+
+                context.NextFreeRegister -= 3;
+                return;
+            }
+
+            int standardValueReg = 0;
+
+            ASMInstructions.EmitExpression(node.Right, standardValueReg, context);
+
             if (node.Left is MemberAccessExpressionSyntax memberAccess)
             {
-                // Передаем R0 как источник данных для STR
-                HandleStructAssignment(node, memberAccess, valueReg);
+                HandleStructAssignment(node, memberAccess, standardValueReg);
             }
             else
             {
                 string varName = node.Left.ToString();
                 if (context.RegisterMap.TryGetValue(varName, out int destReg))
                 {
-                    // Если пишем в локальную переменную (регистр), просто MOV Rdest, R0
-                    HandleLocalAssignment(node, destReg, valueReg);
+                    HandleLocalAssignment(node, destReg, standardValueReg);
                 }
                 else
                 {

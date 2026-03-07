@@ -67,7 +67,7 @@ namespace NETMCUCompiler.CodeBuilder
             return tempOffset;
         }
 
-        private static void EmitOpWithImmediate(SyntaxKind op, int target, int left, int value, MethodCompilationContext context)
+        public static void EmitOpWithImmediate(SyntaxKind op, int target, int left, int value, MethodCompilationContext context)
         {
             // Thumb encoding T1 (3-bit immediate): ADDS Rd, Rn, #imm3
             // Формат: [000][11][10][imm3][Rn][Rd]
@@ -374,6 +374,46 @@ namespace NETMCUCompiler.CodeBuilder
             {
                 // ТЕПЕРЬ МЫ ЗАКРЫВАЕМ ЭТО:
                 EmitArithmetic(binary, targetReg, context, tempOffset);
+            }
+            else if (expr is PrefixUnaryExpressionSyntax prefix)
+            {
+                if (prefix.IsKind(SyntaxKind.UnaryMinusExpression))
+                {
+                    EmitExpression(prefix.Operand, targetReg, context, tempOffset);
+                    context.Emit($"RSBS r{targetReg}, r{targetReg}, #0");
+                    context.Write16((ushort)(0x4240 | ((targetReg & 0x7) << 3) | (targetReg & 0x7))); // RSBS Rd, Rn, #0 is encoded via RSBS which actually is RSB Rd, Rn, #0 => 0x4240 + Rn + Rd
+                }
+                else if (prefix.IsKind(SyntaxKind.LogicalNotExpression))
+                {
+                    // !x : Для bool (0 или 1) это x ^ 1
+                    EmitExpression(prefix.Operand, targetReg, context, tempOffset);
+                    int tmp = tempOffset + 1;
+                    EmitMovImmediate(tmp, 1, context);
+                    EmitArithmeticOp(SyntaxKind.ExclusiveOrExpression, targetReg, targetReg, tmp, context);
+                }
+                // Pre-increment / Pre-decrement logic can be placed here if used inside expression
+            }
+            else if (expr is ElementAccessExpressionSyntax elementAccess)
+            {
+                // Загрузка адреса массива/указателя
+                EmitExpression(elementAccess.Expression, targetReg, context, tempOffset);
+
+                // Вычисление индекса в temp
+                int indexReg = tempOffset + 1;
+                var arg = elementAccess.ArgumentList.Arguments[0]; // Пока 1D массивы
+                EmitExpression(arg.Expression, indexReg, context, indexReg);
+
+                // Умножаем на размер элемента (пока считаем int/ptr = 4 байта)
+                int sizeReg = indexReg + 1;
+                EmitMovImmediate(sizeReg, 4, context);
+                EmitArithmeticOp(SyntaxKind.MultiplyExpression, indexReg, indexReg, sizeReg, context);
+
+                // Складываем адрес и смещение: addr = addr + (index * 4)
+                EmitArithmeticOp(SyntaxKind.AddExpression, targetReg, targetReg, indexReg, context);
+
+                // LDR Rd, [Rd]
+                context.Emit($"LDR r{targetReg}, [r{targetReg}, #0]");
+                context.Write16((ushort)(0x6800 | ((targetReg & 0x7) << 3) | (targetReg & 0x7))); // LDR Rt, [Rn, #0]
             }
             else if (expr is ParenthesizedExpressionSyntax paren)
                 EmitExpression(paren.Expression, targetReg, context, tempOffset);
