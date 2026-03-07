@@ -6,6 +6,8 @@
 
         public BaseCompilationContext? ParentContext { get; set; }
 
+        public CompilationContext? CompilationContext => ParentContext is CompilationContext global ? global : ParentContext?.CompilationContext;
+
         protected BaseCompilationContext(BaseCompilationContext? ParentContext)
         {
             this.ParentContext = ParentContext;

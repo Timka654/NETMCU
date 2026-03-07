@@ -193,6 +193,7 @@ namespace NETMCUCompiler
 
             compilationContext = new CompilationContext(null)
             {
+                Backend = new NETMCUCompiler.CodeBuilder.Backends.CortexM4Backend(),
                 ExceptTypes = [mcuConfigClassDeclaration],
                 ExceptMethods = [],
                 BinaryPath = System.IO.Path.Combine(mcuBinPath, "output.bin"),

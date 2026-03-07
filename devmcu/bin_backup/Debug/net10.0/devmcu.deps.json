@@ -1,0 +1,57 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0/",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {},
+    ".NETCoreApp,Version=v10.0/": {
+      "devmcu/1.0.0": {
+        "dependencies": {
+          "NETMCUCore": "1.0.0",
+          "NETMCUCore.STM": "1.0.0"
+        },
+        "runtime": {
+          "devmcu.dll": {}
+        }
+      },
+      "NETMCUCore/1.0.0": {
+        "runtime": {
+          "NETMCUCore.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "NETMCUCore.STM/1.0.0": {
+        "dependencies": {
+          "NETMCUCore": "1.0.0"
+        },
+        "runtime": {
+          "NETMCUCore.STM.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "devmcu/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "NETMCUCore/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "NETMCUCore.STM/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

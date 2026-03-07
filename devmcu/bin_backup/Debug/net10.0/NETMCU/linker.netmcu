@@ -1,0 +1,288 @@
+{
+  "OutputMethods": {
+    "devmcu.DelegateTest.Test()": {
+      "BinaryOffset": 34,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.BaseClass.GetValue()": {
+      "BinaryOffset": 118,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.BaseClass.Ping(int)": {
+      "BinaryOffset": 126,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.DerivedClass.GetValue()": {
+      "BinaryOffset": 136,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.Program.ProcessArray(int[])": {
+      "BinaryOffset": 144,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.RunTests()": {
+      "BinaryOffset": 292,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.Box\u003CT\u003E.GetValue()": {
+      "BinaryOffset": 1750,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.Program.TestGenerics()": {
+      "BinaryOffset": 332,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.Point.WithX(int)": {
+      "BinaryOffset": 1754,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.Program.Point.WithY(int)": {
+      "BinaryOffset": 1770,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.Program.Point._Clone()": {
+      "BinaryOffset": 1786,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.Program.TestGC()": {
+      "BinaryOffset": 446,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.TestTuples()": {
+      "BinaryOffset": 476,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.TestRecords()": {
+      "BinaryOffset": 508,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.TestStrings()": {
+      "BinaryOffset": 644,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.TestDelegates()": {
+      "BinaryOffset": 802,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.TestVirtualsAndInterfaces()": {
+      "BinaryOffset": 810,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.TestArrays()": {
+      "BinaryOffset": 936,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.TestBoxingAndCasting()": {
+      "BinaryOffset": 1320,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.Main()": {
+      "BinaryOffset": 1454,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.ABC.TestMethod()": {
+      "BinaryOffset": 1814,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.ABC.Process\u003CT\u003E(T)": {
+      "BinaryOffset": 1818,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.ABC.Process_Int32(int)": {
+      "BinaryOffset": 1828,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.ABC.Process_String(string)": {
+      "BinaryOffset": 1838,
+      "IsStatic": true,
+      "NativeName": null
+    },
+    "devmcu.Program.Box\u003CT\u003E.Box(T)": {
+      "BinaryOffset": 1754,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.Program.Point.Point(int, int)": {
+      "BinaryOffset": 1814,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.Program.Point.X.get": {
+      "BinaryOffset": 1814,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.Program.Point.X.set": {
+      "BinaryOffset": 1814,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.Program.Point.Y.get": {
+      "BinaryOffset": 1814,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "devmcu.Program.Point.Y.set": {
+      "BinaryOffset": 1814,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "NETMCU_Generated_Generics.Box_Int32.GetValue()": {
+      "BinaryOffset": 1848,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "NETMCU_Generated_Generics.Box_String.GetValue()": {
+      "BinaryOffset": 1852,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "NETMCU_Generated_Generics.Box_Int32.Box_Int32(int)": {
+      "BinaryOffset": 1852,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "NETMCU_Generated_Generics.Box_String.Box_String(string)": {
+      "BinaryOffset": 1856,
+      "IsStatic": false,
+      "NativeName": null
+    },
+    "NETMCU_Generated_Generics.ValueTuple_Int32_Int32.ValueTuple_Int32_Int32(int, int)": {
+      "BinaryOffset": 1856,
+      "IsStatic": false,
+      "NativeName": null
+    }
+  },
+  "OutputTypes": {
+    "Prog": {
+      "Size": 4,
+      "IsClass": true,
+      "FieldOffsets": {}
+    },
+    "devmcu.DelegateTest": {
+      "Size": 4,
+      "IsClass": true,
+      "FieldOffsets": {}
+    },
+    "devmcu.BaseClass": {
+      "Size": 4,
+      "IsClass": true,
+      "FieldOffsets": {}
+    },
+    "devmcu.DerivedClass": {
+      "Size": 4,
+      "IsClass": true,
+      "FieldOffsets": {}
+    },
+    "devmcu.Program": {
+      "Size": 8,
+      "IsClass": true,
+      "FieldOffsets": {
+        "LED_PIN": 4
+      }
+    },
+    "devmcu.Program.Box\u00601": {
+      "Size": 8,
+      "IsClass": true,
+      "FieldOffsets": {
+        "Value": 4
+      }
+    },
+    "devmcu.Program.Point": {
+      "Size": 4,
+      "IsClass": true,
+      "FieldOffsets": {}
+    },
+    "devmcu.ABC": {
+      "Size": 4,
+      "IsClass": true,
+      "FieldOffsets": {}
+    },
+    "NETMCU_Generated_Generics.Box_Int32": {
+      "Size": 8,
+      "IsClass": true,
+      "FieldOffsets": {
+        "Value": 4
+      }
+    },
+    "NETMCU_Generated_Generics.Box_String": {
+      "Size": 8,
+      "IsClass": true,
+      "FieldOffsets": {
+        "Value": 4
+      }
+    },
+    "NETMCU_Generated_Generics.ValueTuple_Int32_Int32": {
+      "Size": 8,
+      "IsClass": false,
+      "FieldOffsets": {
+        "Item1": 0,
+        "Item2": 4
+      }
+    }
+  },
+  "InputMethods": {
+    "NETMCU__Memory__Alloc": [
+      8,
+      44,
+      8,
+      56,
+      4,
+      8,
+      44,
+      8,
+      28,
+      18,
+      136,
+      192,
+      270,
+      18,
+      76,
+      24
+    ],
+    "NETMCU_Throw": [
+      42,
+      68,
+      36,
+      68,
+      168,
+      246,
+      336,
+      360,
+      246
+    ],
+    "NETMCU_TryPop": [
+      234,
+      240
+    ],
+    "NETMCU_TryPush": [
+      230
+    ],
+    "HAL_GPIO_Init": [
+      76
+    ]
+  }
+}

@@ -6,10 +6,14 @@ using System.Reflection;
 using System.Security.Claims;
 using System.Xml.Linq;
 
+using NETMCUCompiler.CodeBuilder.Backends;
+
 namespace NETMCUCompiler.CodeBuilder
 {
     public class CompilationContext(BaseCompilationContext? ParentContext) : BaseCompilationContext(ParentContext)
     {
+        public required MCUBackend Backend { get; set; }
+
         public required SemanticModel SemanticModel { get; set; }
 
         public TypeDeclarationSyntax[] ExceptTypes { get; set; } = [];

@@ -1,0 +1,62 @@
+{
+  "CompilerOptions": {
+    "Include": [
+      "/build_libs/cmsis_core/Include",
+      "/build_libs/cmsis_f4/Include",
+      "/build_libs/stm32f4xx-hal-driver/Inc",
+      "/HAL_INPUT/stm32f4xx_hal_conf.h"
+    ],
+    "Libraries": [
+      "$(find \u0022/build_libs/stm32f4xx-hal-driver\u0022 -name \u0022*.c\u0022 ! -name \u0022*_template.c\u0022)",
+      "$(find \u0022/build_libs/cmsis_f4/Source/Templates\u0022 -name \u0022*.c\u0022 ! -name \u0022*_template.c\u0022)"
+    ],
+    "Defines": {
+      "STM32F401xC": "STM32F401xC",
+      "USE_HAL_DRIVER": "USE_HAL_DRIVER",
+      "DEV_Test": "DEV_Test"
+    },
+    "Packages": [],
+    "InputConfigurations": [
+      {
+        "Name": "HAL_VERSION",
+        "Type": "string",
+        "DefaultValue": "",
+        "Required": true,
+        "ValidValues": null,
+        "Messages": {
+          "REQUIRED_VALUE": "\u0022HAL_VERSION\u0022 is required configuration value"
+        }
+      },
+      {
+        "Name": "HAL_SERIES",
+        "Type": "string",
+        "DefaultValue": "",
+        "Required": true,
+        "ValidValues": null,
+        "Messages": {
+          "REQUIRED_VALUE": "\u0022HAL_SERIES\u0022 is required configuration value"
+        }
+      },
+      {
+        "Name": "HAL_CONFIGURATION_DIR_PATH",
+        "Type": "string",
+        "DefaultValue": "",
+        "Required": true,
+        "ValidValues": null,
+        "Messages": {
+          "REQUIRED_VALUE": "\u0022HAL_CONFIGURATION_DIR_PATH\u0022 is required configuration value"
+        }
+      },
+      {
+        "Name": "HAL_CONFIGURATION_FILE_NAME",
+        "Type": "string",
+        "DefaultValue": "",
+        "Required": true,
+        "ValidValues": null,
+        "Messages": {
+          "REQUIRED_VALUE": "\u0022HAL_CONFIGURATION_FILE_NAME\u0022 is required configuration value"
+        }
+      }
+    ]
+  }
+}

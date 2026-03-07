@@ -23,7 +23,6 @@ namespace NETMCUCompiler.CodeBuilder
 
         public TypeCompilationContext(TypeDeclarationSyntax type, SemanticModel semanticModel, CompilationContext global) : base(global)
         {
-            ParentContext = global;
             TypeSyntax = type;
             SemanticModel = semanticModel;
 

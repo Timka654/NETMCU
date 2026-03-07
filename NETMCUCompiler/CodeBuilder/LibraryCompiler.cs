@@ -92,13 +92,12 @@ namespace NETMCUCompiler.CodeBuilder
                 var classes = types.OfType<ClassDeclarationSyntax>()
                 .Where(type => !context.ExceptTypes.Contains(type))
                 .OrderByDescending(x => x == context.ProgramClass)
-                .Select(x => new TypeCompilationContext(x, model, context) { Name = GetFullNodeName(x) })
+                .Select(x => context.Backend.CreateTypeContext(x, model, context, GetFullNodeName(x)))
                 .ToDictionary(x => x.Name, x => x);
 
                 var structs = types.OfType<StructDeclarationSyntax>()
                 .Where(type => !context.ExceptTypes.Contains(type))
-                .Select(x =>
-                new TypeCompilationContext(x, model, context) { Name = GetFullNodeName(x) })
+                .Select(x => context.Backend.CreateTypeContext(x, model, context, GetFullNodeName(x)))
                 .ToDictionary(x => x.Name, x => x); ;
 
                 var enums = rootDesc.OfType<EnumDeclarationSyntax>()
@@ -163,7 +162,7 @@ namespace NETMCUCompiler.CodeBuilder
 
                     var csi = model.GetDeclaredSymbol(x) as IMethodSymbol;
 
-                    var c = new MethodCompilationContext(x, csi, tcc) { Name = csi?.ToDisplayString() ?? "UnknownMethod" };
+                    var c = context.Backend.CreateMethodContext(x, csi, tcc, csi?.ToDisplayString() ?? "UnknownMethod");
 
                     return c;
                 })
@@ -367,7 +366,7 @@ namespace NETMCUCompiler.CodeBuilder
             }
 
             // Настраиваем фрейм, теперь передавая параметры
-            ASMInstructions.EmitMethodPrologue(!isStatic, parameters, method);
+            method.Class.Global.Backend.GenerateMethodPrologue(method, !isStatic, parameters);
 
             // Пользуемся нашим старым добрым билдером для внутренностей
             var builder = new Stm32MethodBuilder(method);
@@ -376,7 +375,8 @@ namespace NETMCUCompiler.CodeBuilder
             if (expressionBody != null)
                 builder.Visit(expressionBody);
 
-            ASMInstructions.EmitMethodEpilogue(method);
+            method.Class.Global.Backend.GenerateMethodEpilogue(method);
+            // Move ResolveJumps logic to PostProcess method on Backend maybe?
             ASMInstructions.ResolveJumps(method);
         }
     }
