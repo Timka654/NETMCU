@@ -254,7 +254,7 @@ namespace NETMCUCompiler
             return ms.ToArray();
         }
 
-        private byte[] BuildTypeDataSection(out Dictionary<string, uint> offsets, Dictionary<string, uint> globalSymbolTable)
+        private byte[] BuildTypeDataSection(out Dictionary<string, uint> offsets, Dictionary<string, uint> globalSymbolTable, List<(int OffsetInSection, string TargetMethod)> vtablePatches)
         {
             offsets = new Dictionary<string, uint>();
             using var ms = new MemoryStream();
@@ -299,6 +299,26 @@ namespace NETMCUCompiler
                 else
                 {
                     writer.Write((uint)0);
+                }
+
+                // VTable Output for classes
+                if (t.Value.IsReferenceType)
+                {
+                    var vtable = VTableBuilder.GetVTable(t.Value);
+                    writer.Write((uint)vtable.Count); // size of vtable
+
+                    foreach(var method in vtable)
+                    {
+                        string methodName = method.ToDisplayString(); // This matches the key registered in Global Symbol Table
+
+                        // We record the current offset to patch the pointer later
+                        vtablePatches.Add(((int)ms.Position, methodName));
+                        writer.Write((uint)0); // Placeholder 4 bytes for the pointer
+                    }
+                }
+                else
+                {
+                    writer.Write((uint)0); // Structs usually don't have vtables allocated here (unless boxed, but let's keep it 0)
                 }
             }
 
@@ -429,7 +449,25 @@ namespace NETMCUCompiler
             }
 
             // --- СОЗДАНИЕ И ДОБАВЛЕНИЕ СЕКЦИИ .TYPEDATA ---
-            var typeDataBytes = BuildTypeDataSection(out var typeDataOffsets, globalSymbolTable);
+            List<(int OffsetInSection, string TargetMethod)> vtablePatches = new();
+            var typeDataBytes = BuildTypeDataSection(out var typeDataOffsets, globalSymbolTable, vtablePatches);
+
+            // Path vtable pointers within typeDataBytes!
+            foreach(var patch in vtablePatches)
+            {
+                if (globalSymbolTable.TryGetValue(patch.TargetMethod, out uint methAddr))
+                {
+                    // Write 4 bytes
+                    typeDataBytes[patch.OffsetInSection]     = (byte)(methAddr & 0xFF);
+                    typeDataBytes[patch.OffsetInSection + 1] = (byte)((methAddr >> 8) & 0xFF);
+                    typeDataBytes[patch.OffsetInSection + 2] = (byte)((methAddr >> 16) & 0xFF);
+                    typeDataBytes[patch.OffsetInSection + 3] = (byte)((methAddr >> 24) & 0xFF);
+                }
+                else
+                {
+                    Console.WriteLine($"[WARNING] Virtual method {patch.TargetMethod} not found in global symbol table (could be abstract or missing implementation). Filling with 0.");
+                }
+            }
 
             while (finalImage.Position % 4 != 0) finalImage.WriteByte(0);
 

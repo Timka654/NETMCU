@@ -2,6 +2,16 @@
 
 namespace devmcu
 {
+    class BaseClass
+    {
+        public virtual int GetValue() { return 10; }
+    }
+
+    class DerivedClass : BaseClass
+    {
+        public override int GetValue() { return 42; }
+    }
+
     public class Program
     {
         // Для Black Pill F401: LED на PC13
@@ -26,7 +36,13 @@ namespace devmcu
         {
             DelegateTest.Test();
 
-            int[] data = new int[] { 1, 2, 3, 4, 5 };
+            BaseClass b1 = new BaseClass();
+            BaseClass b2 = new DerivedClass();
+
+            int v1 = b1.GetValue();
+            int v2 = b2.GetValue();
+
+            int[] data = new int[] { v1, v2, 3, 4, 5 };
             int result = ProcessArray(data);
 
             HAL.Init();

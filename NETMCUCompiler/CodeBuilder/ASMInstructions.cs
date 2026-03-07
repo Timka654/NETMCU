@@ -1126,14 +1126,23 @@ namespace NETMCUCompiler.CodeBuilder
                     return;
                 }
 
+                bool isBaseCall = invocation.Expression is MemberAccessExpressionSyntax m && m.Expression is BaseExpressionSyntax;
+                bool isVirtualCall = !methodSymbol.IsStatic && !isBaseCall && 
+                                     (methodSymbol.IsVirtual || methodSymbol.IsAbstract || methodSymbol.IsOverride);
+
                 int regOffset = 0;
+                int instanceReg = 0;
 
                 if (!methodSymbol.IsStatic)
                 {
+                    // Allocate a temporary register for the instance pointer so it's not clobbered by arguments
+                    instanceReg = context.NextFreeRegister++;
+
                     if (invocation.Expression is MemberAccessExpressionSyntax invokationMemberAccess)
-                        EmitExpression(invokationMemberAccess.Expression, 0, context, tempOffset);
+                        EmitExpression(invokationMemberAccess.Expression, instanceReg, context, tempOffset);
                     else
-                        context.Emit("MOV r0, r4"); // fallback "this"
+                        context.Emit($"MOV r{instanceReg}, r4"); // fallback "this"
+
                     regOffset = 1;
                 }
                 else
@@ -1141,26 +1150,72 @@ namespace NETMCUCompiler.CodeBuilder
                     context.NextFreeRegister = 4; // В статических методах 'this' нет, начинаем с r4
                 }
 
+                // Evaluate arguments into temporary safe registers first
+                List<int> argRegs = new();
                 for (int i = 0; i < args.Count; i++)
                 {
                     var argument = args[i];
-                    int argReg = i + regOffset;
-                    if (argReg > 3) throw new Exception("Поддерживается максимум 4 аргумента (включая this)");
+                    int safeReg = context.NextFreeRegister++; // allocate safe temp var
 
                     if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword))
                     {
-                        EmitAddressOf(argument.Expression, argReg, context, tempOffset);
-                        continue;
+                        EmitAddressOf(argument.Expression, safeReg, context, tempOffset);
                     }
-
-                    EmitExpression(args[i].Expression, argReg, context, tempOffset);
+                    else
+                    {
+                        EmitExpression(argument.Expression, safeReg, context, tempOffset);
+                    }
+                    argRegs.Add(safeReg);
                 }
+
+                // Move evaluated arguments into AAPCS registers (R1-R3 for instance methods, R0-R3 for static)
+                for (int i = 0; i < args.Count; i++)
+                {
+                    int targetArgReg = i + regOffset;
+                    if (targetArgReg > 3) throw new Exception("Поддерживается максимум 4 аргумента (включая this)");
+                    if (argRegs[i] != targetArgReg)
+                    {
+                        EmitMovRegister(targetArgReg, argRegs[i], context);
+                    }
+                }
+
+                // Move instance pointer to R0
+                if (!methodSymbol.IsStatic)
+                {
+                    if (instanceReg != 0)
+                        EmitMovRegister(0, instanceReg, context);
+                }
+
+                // Cleanup temps
+                if (!methodSymbol.IsStatic) context.NextFreeRegister--;
+                context.NextFreeRegister -= args.Count;
 
                 var nativeAttr = methodSymbol.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name.Contains("NativeCall") == true);
                 string nativeFunctionName = nativeAttr?.ConstructorArguments.FirstOrDefault().Value?.ToString();
                 string callTarget = nativeFunctionName ?? methodSymbol.ToDisplayString();
 
-                EmitCall(callTarget, context, methodSymbol.IsStatic, nativeAttr != null);
+                if (isVirtualCall && nativeAttr == null)
+                {
+                    int vtableIndex = VTableBuilder.GetVTableIndex(methodSymbol);
+                    if (vtableIndex < 0) throw new Exception($"VTable index not found for virtual method {methodSymbol}");
+
+                    int typeMetaReg = context.NextFreeRegister++;
+                    context.Emit($"LDR r{typeMetaReg}, [r0, #0] @ read TypeMetadata");
+
+                    int funcPtrReg = context.NextFreeRegister++;
+                    int offset = 12 + vtableIndex * 4;
+                    context.Emit($"LDR r{funcPtrReg}, [r{typeMetaReg}, #{offset}] @ read Virtual Method");
+
+                    context.Emit($"BLX r{funcPtrReg} @ call Virtual Method");
+                    // T1 16-bit encoding for BLX Rm -> 010001111_Rm_000
+                    context.Write16((ushort)(0x4780 | (funcPtrReg << 3)));
+
+                    context.NextFreeRegister -= 2;
+                }
+                else
+                {
+                    EmitCall(callTarget, context, methodSymbol.IsStatic, nativeAttr != null);
+                }
 
                 // Результат в R0 -> переносим по месту назначения
                 if (targetReg != 0)
