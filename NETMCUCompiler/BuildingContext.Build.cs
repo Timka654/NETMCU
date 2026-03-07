@@ -140,7 +140,7 @@ namespace NETMCUCompiler
             foreach (var item in relocs.ToArray())
             {
                 if (!refMethods.TryGetValue(item.Key, out var method))
-                    throw new Exception("");
+                    throw new Exception($"Ref methods does not contains {item.Key}");
 
                 foreach (var x in item.Value)
                 {

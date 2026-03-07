@@ -440,6 +440,129 @@ namespace NETMCUCompiler.CodeBuilder
                 // 4. Финал
                 context.Emit($"{endLabel}:");
             }
+            else if (expr is ObjectCreationExpressionSyntax objectCreation)
+            {
+                var typeSymbol = context.SemanticModel.GetTypeInfo(objectCreation.Type).Type;
+
+                int size = 4; // minimum size
+                if (typeSymbol != null)
+                {
+                    // Compute basic size for classes (just counting fields * 4)
+                    int fieldsCount = typeSymbol.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count();
+                    if (fieldsCount > 0) size = fieldsCount * 4;
+                }
+
+                EmitMovImmediate(0, size, context);
+
+                // Call the native allocator (returns ptr in R0)
+                EmitCall("NETMCU__Memory__Alloc", context, isStatic: true, isNative: true);
+
+                // Store object pointer to targetReg
+                if (targetReg != 0)
+                {
+                    EmitMovRegister(targetReg, 0, context);
+                }
+
+                // Call constructor if present
+                var ctorSymbol = context.SemanticModel.GetSymbolInfo(objectCreation).Symbol as IMethodSymbol;
+                if (ctorSymbol != null && objectCreation.ArgumentList != null)
+                {
+                    var args = objectCreation.ArgumentList.Arguments;
+
+                    // Note: In AAPCS, r0 is "this", args are in r1-r3
+                    // Because EmitExpression on args may clobber R0, we must preserve 'this' on stack or evaluate args carefully.
+                    // For simplicity right now, assuming simple args.
+
+                    // We need this pointer in R0. If we already moved it to targetReg above, let's put it back to R0.
+                    // Wait, we need to load arguments inside r1-r3!
+                    for (int i = 0; i < args.Count; i++)
+                    {
+                        EmitExpression(args[i].Expression, i + 1, context, tempOffset);
+                    }
+
+                    if (targetReg != 0) 
+                    {
+                        EmitMovRegister(0, targetReg, context);
+                    }
+
+                    string nativeFunctionName = ctorSymbol.GetAttributes()
+                        .FirstOrDefault(a => a.AttributeClass?.Name.Contains("NativeCall") == true)?
+                        .ConstructorArguments.FirstOrDefault().Value?.ToString();
+
+                    string callTarget = nativeFunctionName ?? ctorSymbol.ToDisplayString();
+                    EmitCall(callTarget, context, isStatic: false, isNative: nativeFunctionName != null);
+                }
+            }
+            else if (expr is ArrayCreationExpressionSyntax arrayCreation)
+            {
+                if (arrayCreation.Type.RankSpecifiers.Count > 0)
+                {
+                    var rank = arrayCreation.Type.RankSpecifiers[0];
+                    var sizeExpr = rank.Sizes[0];
+
+                    // evaluate the array size
+                    EmitExpression(sizeExpr, 0, context, tempOffset);
+
+                    // multiply size by 4 bytes (assuming 32 bit structures/refs)
+                    int calcReg = tempOffset + 1;
+                    if (calcReg == 0) calcReg = 1;
+
+                    EmitMovImmediate(calcReg, 4, context);
+                    EmitArithmeticOp(SyntaxKind.MultiplyExpression, 0, 0, calcReg, context);
+
+                    EmitCall("NETMCU__Memory__Alloc", context, isStatic: true, isNative: true);
+
+                    if (targetReg != 0)
+                    {
+                        EmitMovRegister(targetReg, 0, context);
+                    }
+                }
+            }
+            else if (expr is InvocationExpressionSyntax invocation)
+            {
+                var methodSymbol = context.SemanticModel.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
+                if (methodSymbol == null) throw new Exception($"Символ не найден для вызова: {invocation}");
+
+                var args = invocation.ArgumentList.Arguments;
+                int regOffset = 0;
+
+                if (!methodSymbol.IsStatic)
+                {
+                    if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+                        EmitExpression(memberAccess.Expression, 0, context, tempOffset);
+                    else
+                        context.Emit("MOV r0, r4"); // fallback "this"
+                    regOffset = 1;
+                }
+
+                for (int i = 0; i < args.Count; i++)
+                {
+                    var argument = args[i];
+                    if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword))
+                    {
+                        string varName = argument.Expression.ToString();
+                        if (context.StackMap.TryGetValue(varName, out var stackVar))
+                            context.Emit($"ADD R{i + regOffset}, SP, #{stackVar.StackOffset}");
+                        continue;
+                    }
+
+                    int argReg = i + regOffset;
+                    if (argReg > 3) throw new Exception("Поддерживается максимум 4 аргумента (включая this)");
+                    EmitExpression(args[i].Expression, argReg, context, tempOffset);
+                }
+
+                var nativeAttr = methodSymbol.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name.Contains("NativeCall") == true);
+                string nativeFunctionName = nativeAttr?.ConstructorArguments.FirstOrDefault().Value?.ToString();
+                string callTarget = nativeFunctionName ?? methodSymbol.ToDisplayString();
+
+                EmitCall(callTarget, context, methodSymbol.IsStatic, nativeAttr != null);
+
+                // Результат в R0 -> переносим по месту назначения
+                if (targetReg != 0)
+                {
+                    EmitMovRegister(targetReg, 0, context);
+                }
+            }
         }
 
         public static void EmitFunctionFrame(MethodDeclarationSyntax node, MethodCompilationContext context, Action bodyBuilder)

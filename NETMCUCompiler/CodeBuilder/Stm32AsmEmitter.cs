@@ -600,22 +600,6 @@ namespace NETMCUCompiler.CodeBuilder
 
             context.Asm.AppendLine($"{endLabel}:");
         }
-        //public override void VisitObjectCreationExpression(ObjectCreationExpressionSyntax node)
-        //{
-        //    var typeName = node.Type.ToString();
-        //    var meta = _typeManager.GetType(typeName);
-
-        //    // 1. Подготовка размера для Alloc (в r0)
-        //    ASMInstructions.EmitMovImmediate(0, meta.TotalSize, context);
-
-        //    // 2. Вызов нативного аллокатора
-        //    ASMInstructions.EmitCall("NETMCU__Memory__Alloc", context);
-
-        //    // 3. Результат (указатель) теперь в r0. Переносим в целевой регистр переменной.
-        //    int targetReg = context.NextFreeRegister++;
-        //    ASMInstructions.EmitMovRegister(targetReg, 0, context);
-        //}
-
         //public override void VisitClassDeclaration(ClassDeclarationSyntax node)
         //{
         //    if (context.ExceptTypes.Contains(node)) return;
@@ -677,65 +661,9 @@ namespace NETMCUCompiler.CodeBuilder
 
         public override void VisitInvocationExpression(InvocationExpressionSyntax node)
         {
-            // 1. Получаем символ метода через семантическую модель (уже есть в твоем коде)
-            var methodSymbol = context.SemanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
-            if (methodSymbol == null) throw new Exception($"Символ не найден для: {node}");
-
-            var args = node.ArgumentList.Arguments;
-            int regOffset = 0;
-
-            // 2. Логика 'this' (указатель на объект)
-            if (!methodSymbol.IsStatic)
-            {
-                // Если это вызов типа myObj.Set(), вычисляем myObj в r0
-                if (node.Expression is MemberAccessExpressionSyntax memberAccess)
-                {
-                    ASMInstructions.EmitExpression(memberAccess.Expression, 0, context);
-                }
-                else
-                {
-                    // Если просто Set(), значит работаем с текущим объектом (r4)
-                    context.Emit("MOV r0, r4");
-                }
-                regOffset = 1; // Все остальные аргументы сдвигаются на r1, r2, r3
-            }
-
-            // 3. Загружаем аргументы (r0-r3 согласно AAPCS)
-            for (int i = 0; i < args.Count; i++)
-            {
-                var argument = node.ArgumentList.Arguments[i];
-                if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword))
-                {
-                    string varName = argument.Expression.ToString();
-                    if (context.StackMap.TryGetValue(varName, out var stackVar))
-                    {
-                        // Нам нужен АДРЕС структуры. В ARM это: ADD Rd, SP, #offset
-                        int argReg = i; // Обычно R0-R3
-                        context.Emit($"ADD R{argReg}, SP, #{stackVar.StackOffset}");
-                    }
-                    continue;
-                }
-
-                int targetReg = i + regOffset;
-                if (targetReg > 3)
-                    throw new Exception("Поддерживается максимум 4 аргумента (включая this)");
-
-                ASMInstructions.EmitExpression(args[i].Expression, targetReg, context);
-            }
-
-            // 4. Проверка на NativeCall
-            var nativeAttr = methodSymbol.GetAttributes()
-                .FirstOrDefault(a => a.AttributeClass.Name.Contains("NativeCall"));
-
-            // Если есть атрибут, берем имя функции в Си из него, иначе используем FullName метода
-            string nativeFunctionName = nativeAttr?.ConstructorArguments.FirstOrDefault().Value?.ToString();
-            string callTarget = nativeFunctionName ?? methodSymbol.ToDisplayString();
-
-            // 5. Генерируем BL
-            ASMInstructions.EmitCall(callTarget, context, methodSymbol.IsStatic, nativeAttr != null);
-
-            // Если метод что-то возвращает, результат в r0. 
-            // Нам нужно пометить, что r0 теперь занят результатом (для будущих присваиваний)
+            // Метод может не возвращать значение, или мы игнорируем его
+            // Обработчик в EmitExpression уже знает как сгенерировать BL и подготовить аргументы
+            ASMInstructions.EmitExpression(node, 0, context);
         }
 
     }
