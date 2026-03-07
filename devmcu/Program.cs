@@ -43,4 +43,12 @@ namespace devmcu
             return;
         }
     }
+
+    public class ABC
+    {
+        public static void TestMethod()
+        { 
+        
+        }
+    }
 }

@@ -12,11 +12,14 @@
 **          
 **
 ===========================================================*/
+using System.MCU.Compiler.Attributes;
+
 namespace System
 {
     /* By default, attributes are inherited and multiple attributes are not allowed */
     //[Serializable]
     [AttributeUsage(AttributeTargets.Class, Inherited = true)]
+    [CompilerType]
     //[System.Runtime.InteropServices.ComVisible(true)]
     public sealed class AttributeUsageAttribute : Attribute
     {

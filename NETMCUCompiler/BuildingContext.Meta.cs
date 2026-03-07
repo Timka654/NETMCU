@@ -8,11 +8,18 @@ using System.Text;
 
 namespace NETMCUCompiler
 {
+    public partial class SolutionContext
+    {
+        public BuildingContext StartupProject { get; set; }
+
+        public Dictionary<string, BuildingContext> Projects { get; } = new();
+    }
+
     //meta
     public partial class BuildingContext
     {
 
-        void CollectProjectContexts(Microsoft.CodeAnalysis.Project project)
+        async Task CollectProjectContexts(Microsoft.CodeAnalysis.Project project, BuildingOptions options)
         {
             var solution = project.Solution;
 
@@ -21,10 +28,19 @@ namespace NETMCUCompiler
                 // Находим проект в текущем решении по его ID
                 var referencedProject = solution.GetProject(reference.ProjectId);
 
-                if (referencedProject != null && !string.IsNullOrEmpty(referencedProject.FilePath) && referencedProject.Name != "NETMCUCore")
+                if (referencedProject != null && !string.IsNullOrEmpty(referencedProject.FilePath)/* && referencedProject.Name != "NETMCUCore"*/)
                 {
+                    if (!solutionContext.Projects.TryGetValue(referencedProject.FilePath, out var existingContext))
+                    {
+                        existingContext = new BuildingContext(referencedProject.FilePath, BuildingOutputTypeEnum.Library, solutionContext);
+
+                        solutionContext.Projects[referencedProject.FilePath] = existingContext;
+
+                        await existingContext.loadAsync(options);
+                    }
+
                     // Добавляем путь к .csproj файлу
-                    referenceContexts[reference.ProjectId] = new BuildingContext(referencedProject.FilePath, BuildingOutputTypeEnum.Library);
+                    referenceContexts[reference.ProjectId] = existingContext;
                 }
             }
         }
@@ -67,19 +83,20 @@ namespace NETMCUCompiler
                 throw new Exception("Building context path must point to .csproj file or folder with single .csproj file");
             }
 
-            await TryLoadProject();
-
-
             Options = new BuildingOptions();
+
+            options ??= Options;
+
+            if (!await TryLoadProject(options))
+                throw new Exception($"Project context already have in solution context");
 
             SemanticMethodExtractor e = new SemanticMethodExtractor();
             var configureMethods = e.ExtractInvocations(mcuConfigClassDeclaration, mcuConfigSemanticModel).ToArray();
 
-            options ??= Options;
-
             foreach (var reference in referenceContexts)
             {
-                await reference.Value.loadAsync(options);
+                //if (reference.Value.Options == null)
+                //    await reference.Value.loadAsync(options);
                 needsRebuildCore = needsRebuildCore || reference.Value.needsRebuildCore;
             }
 
@@ -88,14 +105,14 @@ namespace NETMCUCompiler
             await TryLoadCoreData(options);
         }
 
-        private async Task TryLoadProject()
+        private async Task<bool> TryLoadProject(BuildingOptions options)
         {
             using (var workspace = MSBuildWorkspace.Create())
             {
                 // 2. Загружаем проект напрямую
                 var project = await workspace.OpenProjectAsync(Path);
 
-                CollectProjectContexts(project);
+                await CollectProjectContexts(project, options);
 
                 var msbuildProject = new Microsoft.Build.Evaluation.Project(project.FilePath);
 
@@ -109,7 +126,7 @@ namespace NETMCUCompiler
 
                 var compilation = await project.GetCompilationAsync();
 
-                if (compilation == null) return;
+                if (compilation == null) return true;
 
                 Compilation = compilation;
 
@@ -171,6 +188,8 @@ namespace NETMCUCompiler
 
 
             }
+
+            return true;
         }
 
         private async Task LoadOptions(configureRecord[] configureMethods, SemanticModel semanticModel, BuildingOptions bo)

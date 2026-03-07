@@ -1,6 +1,7 @@
 ﻿namespace System.MCU.Compiler.Attributes
 {
     [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
+    [CompilerType]
     public class DefineConfigurationValueAttribute : MCUConfigurationValueAttribute
     {
         public string? Name { get; set; }

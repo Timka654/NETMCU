@@ -1,7 +1,11 @@
 ﻿
+using System.MCU.Compiler.Attributes;
+
 namespace System.Runtime.Versioning
 {
     [AttributeUsage(AttributeTargets.Assembly, Inherited = false)]
+
+    [CompilerType]
     public sealed class TargetFrameworkAttribute : Attribute
     {
         public TargetFrameworkAttribute(string frameworkName)

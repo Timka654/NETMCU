@@ -13,15 +13,18 @@ namespace NETMCUCompiler.CodeBuilder
 
         public bool IsPublic { get; }
 
+        public bool CompilerType { get; }
+
         public bool IsClass { get; }
 
         public int Size { get; }
 
         public IReadOnlyDictionary<string, int> FieldOffsets { get; }
 
-        public TypeCompilationContext(TypeDeclarationSyntax type)
+        public TypeCompilationContext(TypeDeclarationSyntax type, SemanticModel semanticModel)
         {
             TypeSyntax = type;
+            SemanticModel = semanticModel;
 
             int currentOffset = 0;
 
@@ -41,11 +44,13 @@ namespace NETMCUCompiler.CodeBuilder
 
             IsClass = TypeSyntax is ClassDeclarationSyntax;
             IsPublic = TypeSyntax.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword));
+            CompilerType = TypeSyntax.AttributeLists.SelectMany(a => a.Attributes)
+                .Any(a => a.Name.ToString() == "CompilerType" || a.Name.ToString() == "CompilerTypeAttribute");
         }
 
         public override CompilationContextTypeEnum ContextType => CompilationContextTypeEnum.Type;
 
-        public required SemanticModel SemanticModel { get; init; }
+        public SemanticModel SemanticModel { get; }
 
         public CompilationContext Global => ParentContext as CompilationContext;
 

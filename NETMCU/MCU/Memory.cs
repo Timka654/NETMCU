@@ -3,10 +3,10 @@ using System.MCU.Compiler.Attributes;
 
 namespace System.MCU
 {
+
+    [CompilerType]
     public static class Memory
     {
-        // Компилятор сгенерирует BL Memory_Write
-        // Ядро на уровне линковки подставит туда реальный адрес нативного кода
         [NativeCall("NETMCU__Memory__Write")]
         public static extern void Write(uint addr, uint val);
 

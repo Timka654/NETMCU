@@ -4,6 +4,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+using System.MCU.Compiler.Attributes;
+
 namespace System
 {
     // Custom attribute to indicate that the enum
@@ -11,6 +13,7 @@ namespace System
     // An IDE may use this information to provide a richer
     // development experience.
     [AttributeUsage(AttributeTargets.Enum, Inherited = false)]
+    [CompilerType]
     public class FlagsAttribute : Attribute
     {
         public FlagsAttribute()

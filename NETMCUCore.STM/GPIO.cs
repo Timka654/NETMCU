@@ -12,6 +12,7 @@ namespace NETMCUCore.STM
     //    public static extern void NativeEnableClock(int portIdx);
     //}
 
+    [CompilerType]
     public class HAL_GPIO_API
     {
         [NativeCall("HAL_GPIO_Init")]

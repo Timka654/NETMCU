@@ -5,6 +5,7 @@ namespace System.MCU.Compiler.Attributes
     /// Compiler attribute for marking method as one that replaces a configuration value.
     /// </summary>
     [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
+    [CompilerType]
     public class ReplaceConfigurationValueAttribute : MCUConfigurationValueAttribute
     {
         public string? Name { get; set; }
@@ -15,6 +16,7 @@ namespace System.MCU.Compiler.Attributes
     }
 
     [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
+    [CompilerType]
     public class InputConfigurationValueAttribute : MCUConfigurationValueAttribute
     {
         public string? Name { get; set; }

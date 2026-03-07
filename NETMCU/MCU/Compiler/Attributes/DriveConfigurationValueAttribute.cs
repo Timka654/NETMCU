@@ -1,6 +1,7 @@
 ﻿namespace System.MCU.Compiler.Attributes
 {
     [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
+    [CompilerType]
     public class DriveConfigurationValueAttribute : MCUConfigurationValueAttribute
     {
         public string? Path { get; set; }
@@ -10,6 +11,7 @@
     }
 
     [AttributeUsage(AttributeTargets.Method, Inherited = false, AllowMultiple = true)]
+    [CompilerType]
     public class RepositoryConfigurationValueAttribute : MCUConfigurationValueAttribute
     {
         public string? Path { get; set; }

@@ -1,5 +1,9 @@
-﻿namespace System.MCU.Compiler
+﻿using System.MCU.Compiler.Attributes;
+
+namespace System.MCU.Compiler
 {
+
+    [CompilerType]
     public class InputConfigurationErrorMessage(string name, string message)
     {
         public const string InvalidValue = "INVALID_VALUE";

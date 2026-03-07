@@ -19,7 +19,7 @@ SRCS=$(find /project/src /project/native -name "*.c" -o -name "*.s" -o -name "*.
 
 arm-none-eabi-gcc $MY_CFLAGS \
 	$SRCS \
-	%#CFLAGS_LIBS#% \
+	%#CFLAGS_LIBS#%
 	-o /project/build/kernel.elf \
 	-T /project/linker.ld \
 	-Wl,-Map=/project/build/kernel.map,--cref

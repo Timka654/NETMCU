@@ -18,7 +18,7 @@ using System.Text.RegularExpressions;
 
 namespace NETMCUCompiler
 {
-    public partial class BuildingContext(string path, BuildingOutputTypeEnum type)
+    public partial class BuildingContext(string path, BuildingOutputTypeEnum type, SolutionContext solutionContext)
     {
         public string Path { get; private set; } = path;
 
@@ -106,11 +106,13 @@ namespace NETMCUCompiler
         }
 
         // Метод проверки наследования (рекурсивный)
-        bool IsTargetClass(INamedTypeSymbol? symbol, string targetBase)
+        bool IsTargetClass(INamedTypeSymbol? _symbol, string targetBase)
         {
+            var symbol = _symbol;
+
             while (symbol != null)
             {
-                if (symbol.ToDisplayString() == targetBase) return true;
+                if (symbol.ToDisplayString() == targetBase && !SymbolEqualityComparer.Default.Equals(symbol, _symbol)) return true;
                 symbol = symbol.BaseType;
             }
             return false;

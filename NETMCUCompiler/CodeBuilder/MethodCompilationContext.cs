@@ -17,6 +17,8 @@ namespace NETMCUCompiler.CodeBuilder
 
         public bool IsPublic { get; }
 
+        public bool IgnoreMethodCompilation => ParentContext is TypeCompilationContext typeCompilation && typeCompilation.CompilerType;
+
         public MethodCompilationContext(SyntaxNode methodSyntax)
         {
             MethodSyntax = methodSyntax;
@@ -25,6 +27,7 @@ namespace NETMCUCompiler.CodeBuilder
             {
                 IsPublic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword));
                 IsStatic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
+
             }
         }
 

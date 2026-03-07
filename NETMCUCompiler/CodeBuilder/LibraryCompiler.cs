@@ -56,7 +56,6 @@ namespace NETMCUCompiler.CodeBuilder
 
         public static void CompileProject(Compilation compilation, CompilationContext context)
         {
-
             //IEnumerable<MethodDeclarationSyntax> GetInnerMethods(MethodDeclarationSyntax method)
             //{ 
             //method.Body.
@@ -85,13 +84,13 @@ namespace NETMCUCompiler.CodeBuilder
                 var classes = types.OfType<ClassDeclarationSyntax>()
                 .Where(type => !context.ExceptTypes.Contains(type))
                 .OrderByDescending(x => x == context.ProgramClass)
-                .Select(x => new TypeCompilationContext(x) { SemanticModel = model, Name = GetFullNodeName(x), ParentContext = context })
+                .Select(x => new TypeCompilationContext(x, model) { Name = GetFullNodeName(x), ParentContext = context })
                 .ToDictionary(x => x.Name, x => x);
 
                 var structs = types.OfType<StructDeclarationSyntax>()
                 .Where(type => !context.ExceptTypes.Contains(type))
                 .Select(x =>
-                new TypeCompilationContext(x) { SemanticModel = model, Name = GetFullNodeName(x), ParentContext = context })
+                new TypeCompilationContext(x, model) { Name = GetFullNodeName(x), ParentContext = context })
                 .ToDictionary(x => x.Name, x => x); ;
 
                 var enums = rootDesc.OfType<EnumDeclarationSyntax>()
@@ -114,8 +113,11 @@ namespace NETMCUCompiler.CodeBuilder
                         return false;
 
                     var containingType = method.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
-                    if (containingType != null && context.ExceptTypes.Contains(containingType))
-                        return false;
+                    if (containingType != null)
+                    {
+                        if (context.ExceptTypes.Contains(containingType))
+                            return false;
+                    }
 
                     return true;
                 })
@@ -142,7 +144,7 @@ namespace NETMCUCompiler.CodeBuilder
 
                     var csi = model.GetDeclaredSymbol(x);
 
-                    var c = new MethodCompilationContext(x) {  Name = csi.ToDisplayString(), ParentContext = tcc };
+                    var c = new MethodCompilationContext(x) { Name = csi.ToDisplayString(), ParentContext = tcc };
 
                     return c;
                 })
@@ -272,7 +274,9 @@ namespace NETMCUCompiler.CodeBuilder
                     }
 
                     c.Value.ParentContext.Childs.Add(c.Key, c.Value);
-                    context.RegisterMethod(c.Value);
+
+                    //if (!c.Value.IgnoreMethodCompilation)
+                        context.RegisterMethod(c.Value);
                 }
             }
 
@@ -298,7 +302,7 @@ namespace NETMCUCompiler.CodeBuilder
             if (body == null && expressionBody == null) return;
 
             var modifiers = methodSyntax?.Modifiers ?? localFuncSyntax?.Modifiers;
-            
+
             // СБОР ЛОКАЛЬНЫХ КОНСТАНТ МЕТОДА (вторая часть BuildAsm)
             var localConsts = method.MethodSyntax.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
                                 .Where(s => s.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword)));

@@ -3,6 +3,7 @@ using System.MCU.Compiler.Attributes;
 
 namespace System.MCU.Compiler
 {
+    [CompilerType]
     public class CompilerOptions
     {
         [ReplaceConfigurationValue(NameArg = nameof(name), ValueArg = nameof(value))]

@@ -38,6 +38,7 @@ namespace NETMCUCompiler
             var outputPath = System.IO.Path.Combine(mcuBinPath, "linker.netmcu");
 
             var methods = Methods;
+            Console.WriteLine($"DumpLinker {Path} - Compiled = {!methods.Any(x => x.BinaryOffset == null)}");
 
             if (methods.Any(x => x.BinaryOffset == null))
                 throw new Exception("Some methods have null BinaryOffset. First you must build image.");
@@ -180,6 +181,15 @@ namespace NETMCUCompiler
 
         private async Task<bool> compile(/*LinkerContext? linker*/)
         {
+            if (compilationContext != null)
+            {
+                Console.WriteLine($"Compile {Path} - already compiled. Skipping");
+
+                return true;
+            }
+
+            Console.WriteLine($"Compile {Path} ...");
+
             compilationContext = new CompilationContext()
             {
                 ParentContext = null,
@@ -199,9 +209,8 @@ namespace NETMCUCompiler
                     throw new Exception($"Failed to compile referenced project: {reference.Value.Path}");
                 compilationContext.FillConstants(reference.Value.compilationContext!.GetConstantMap());
             }
+
             LibraryCompiler.CompileProject(Compilation, compilationContext);
-
-
 
             DumpMeta();
 
@@ -296,9 +305,9 @@ namespace NETMCUCompiler
             Dictionary<string, List<int>> refCallOffsets = new();
             Dictionary<string, List<int>> dataRelocOffsets = new();
 
-            var refs = CollectReferences().Prepend(this).ToArray();
+            //var refs = CollectReferences().Prepend(this).ToArray();
 
-            foreach (var ctx in refs)
+            foreach (var ctx in solutionContext.Projects.Values)
             {
                 int startOffset = (int)finalImage.Position;
                 uint libraryBaseAddr = flashBaseAddress + (uint)startOffset;

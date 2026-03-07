@@ -2,6 +2,8 @@
 
 namespace System.MCU
 {
+
+    [CompilerType]
     public static class Debugger
     {
         [NativeCall("NETMCU__Debugger__Break")]

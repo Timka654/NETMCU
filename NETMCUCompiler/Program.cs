@@ -16,23 +16,26 @@ namespace NETMCUCompiler
     {
         static async Task Main(string[] args)
         {
-            var projectPath = "../../../../devmcu/devmcu.csproj"; // temp
+            var projectPath = Path.GetFullPath("../../../../devmcu/devmcu.csproj"); // temp
 
             // 1. Инициализация MSBuild (нужно вызвать один раз при старте)
             if (!MSBuildLocator.IsRegistered)
                 MSBuildLocator.RegisterDefaults();
 
-            BuildingContext bc = new BuildingContext(projectPath, BuildingOutputTypeEnum.Executable);
+            SolutionContext sc = new SolutionContext();
 
-            await bc.LoadAsync();
+            sc.StartupProject = new BuildingContext(projectPath, BuildingOutputTypeEnum.Executable, sc);
+            sc.Projects.Add(projectPath, sc.StartupProject);
 
-            if(!await bc.BuildCore())
+            await sc.StartupProject.LoadAsync();
+
+            if(!await sc.StartupProject.BuildCore())
             {
                 Console.WriteLine("Build failed");
                 return;
             }
 
-            if(!await bc.Compile())
+            if(!await sc.StartupProject.Compile())
             {
                 Console.WriteLine("Compile failed");
                 return;
