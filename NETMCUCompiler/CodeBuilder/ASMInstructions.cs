@@ -326,7 +326,8 @@ namespace NETMCUCompiler.CodeBuilder
                     var stringSymbol = context.Class.Global.RegisterStringLiteral(stringValue);
                     context.AddDataRelocation(stringSymbol);
                     context.Emit($"LDR r{targetReg}, ={stringSymbol} ; (placeholder for MOVW/MOVT)");
-                    context.Bin.Write(new byte[8], 0, 8);
+                    context.Bytecode((byte)targetReg);
+                    context.Bin.Write(new byte[7], 0, 7);
                     return;
                 }
                 else
@@ -356,7 +357,8 @@ namespace NETMCUCompiler.CodeBuilder
 
                     context.AddDataRelocation(stringSymbol);
                     context.Emit($"LDR r{targetReg}, ={stringSymbol} ; (placeholder for MOVW/MOVT)");
-                    context.Bin.Write(new byte[8], 0, 8);
+                    context.Bytecode((byte)targetReg);
+                    context.Bin.Write(new byte[7], 0, 7);
                 }
                 else
                 {
@@ -1090,25 +1092,26 @@ namespace NETMCUCompiler.CodeBuilder
         /// <param name="value">32-битный адрес, который нужно загрузить.</param>
         public static void PatchMovwMovt(byte[] binary, int offset, uint value)
         {
-            // Эта реализация предполагает, что целевой регистр - r0.
-            // MOVW r0, #lower_16_bits
+            uint rd = binary[offset]; // Мы сохранили 1 байт targetReg в плейсхолдер
+
             uint lower = value & 0xFFFF;
-            uint movw = 0xF2400000 | (((lower >> 12) & 0xF) << 16) | (lower & 0xFFF);
+            uint movwHigh = 0xF240 | (((lower >> 11) & 0x1) << 10) | ((lower >> 12) & 0xF);
+            uint movwLow  = (((lower >> 8) & 0x7) << 12) | (rd << 8) | (lower & 0xFF);
 
-            // MOVT r0, #upper_16_bits
             uint upper = (value >> 16) & 0xFFFF;
-            uint movt = 0xF2C00000 | (((upper >> 12) & 0xF) << 16) | (upper & 0xFFF);
+            uint movtHigh = 0xF2C0 | (((upper >> 11) & 0x1) << 10) | ((upper >> 12) & 0xF);
+            uint movtLow  = (((upper >> 8) & 0x7) << 12) | (rd << 8) | (upper & 0xFF);
 
-            // Записываем инструкции в little-endian формате
-            binary[offset + 0] = (byte)movw;
-            binary[offset + 1] = (byte)(movw >> 8);
-            binary[offset + 2] = (byte)(movw >> 16);
-            binary[offset + 3] = (byte)(movw >> 24);
+            // Записываем инструкции: сначала старшее полуслово, затем младшее
+            binary[offset + 0] = (byte)(movwHigh & 0xFF);
+            binary[offset + 1] = (byte)(movwHigh >> 8);
+            binary[offset + 2] = (byte)(movwLow & 0xFF);
+            binary[offset + 3] = (byte)(movwLow >> 8);
 
-            binary[offset + 4] = (byte)movt;
-            binary[offset + 5] = (byte)(movt >> 8);
-            binary[offset + 6] = (byte)(movt >> 16);
-            binary[offset + 7] = (byte)(movt >> 24);
+            binary[offset + 4] = (byte)(movtHigh & 0xFF);
+            binary[offset + 5] = (byte)(movtHigh >> 8);
+            binary[offset + 6] = (byte)(movtLow & 0xFF);
+            binary[offset + 7] = (byte)(movtLow >> 8);
         }
     }
 }
