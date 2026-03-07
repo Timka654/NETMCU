@@ -178,6 +178,33 @@ namespace NETMCUCompiler.CodeBuilder
             context.Bytecode((byte)(opcode >> 8));
         }
 
+        public static void EmitLdrImmediate(int target, int offset, MethodCompilationContext context)
+        {
+            // Placeholder: currently not strictly needed without baseReg. Actually, let's just make EmitMemoryAccess.
+        }
+
+        public static void EmitMemoryAccess(bool isLoad, int targetReg, int baseReg, int offset, MethodCompilationContext context)
+        {
+            if (baseReg == 13) // SP
+            {
+                context.Emit($"{(isLoad ? "LDR" : "STR")} r{targetReg}, [SP, #{offset}]");
+            }
+            else
+            {
+                context.Emit($"{(isLoad ? "LDR" : "STR")} r{targetReg}, [r{baseReg}, #{offset}]");
+            }
+
+            // T3 32-bit encoding
+            // LDR: 1111_1000_1101_Rn_Rt_imm12 -> 0xF8D0 | (Rn) << 16 | (Rt) << 12 | imm12
+            // STR: 1111_1000_1100_Rn_Rt_imm12 -> 0xF8C0 | (Rn) << 16 | (Rt) << 12 | imm12
+            uint op = isLoad ? 0xF8D00000u : 0xF8C00000u;
+            op |= ((uint)baseReg & 0xF) << 16;
+            op |= ((uint)targetReg & 0xF) << 12;
+            op |= ((uint)offset & 0xFFF);
+
+            context.Write32(op);
+        }
+
         // Базовый MOV (Rd = Imm8)
         public static void EmitMovImmediate(int reg, int val, MethodCompilationContext context)
         {
@@ -577,18 +604,38 @@ namespace NETMCUCompiler.CodeBuilder
                 }
                 else if (symbolInfo is IFieldSymbol fieldSymbol)
                 {
-                    // Чтение поля из памяти (или стека, если структура)
-                    // TODO: Полноценное чтение полей
-                    string structName = memberAccess.Expression.ToString();
-                    string fieldName = memberAccess.Name.ToString();
+                    string fieldName = fieldSymbol.Name;
+                    string typeName = fieldSymbol.ContainingType.ToDisplayString();
 
-                    if (context.StackMap.TryGetValue(structName, out var stackVar))
+                    // Ищем метаданные типа, чтобы узнать смещение поля.
+                    if (context.Class.Global.Childs.TryGetValue(typeName, out var typeCtx) && typeCtx is TypeCompilationContext tcc)
                     {
-                        if (stackVar.Metadata.FieldOffsets.TryGetValue(fieldName, out int fieldOffset))
+                        if (tcc.FieldOffsets.TryGetValue(fieldName, out int fieldOffset))
                         {
-                            context.Emit($"LDR r{targetReg}, [SP, #{stackVar.StackOffset + fieldOffset}] @ Load {structName}.{fieldName}");
-                            // Binary TODO encoding
+                            string structName = memberAccess.Expression.ToString();
+                            
+                            // Проверяем, лежит ли эта переменная на стеке (локальная структура)
+                            if (context.StackMap.TryGetValue(structName, out var stackVar))
+                            {
+                                EmitMemoryAccess(true, targetReg, 13, stackVar.StackOffset + fieldOffset, context);
+                            }
+                            else
+                            {
+                                // Иначе считаем, что это объект или структура по ссылке/указателю.
+                                // Вычисляем выражение, чтобы получить базовый адрес в регистр.
+                                int baseReg = tempOffset + 1;
+                                EmitExpression(memberAccess.Expression, baseReg, context, tempOffset + 1);
+                                EmitMemoryAccess(true, targetReg, baseReg, fieldOffset, context);
+                            }
                         }
+                        else
+                        {
+                            context.Emit($"@ Field {fieldName} not found in offsets for {typeName}");
+                        }
+                    }
+                    else
+                    {
+                        context.Emit($"@ Type {typeName} metadata not found for field {fieldName}");
                     }
                 }
             }

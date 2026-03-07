@@ -530,44 +530,39 @@ namespace NETMCUCompiler.CodeBuilder
 
         private void HandleStructAssignment(AssignmentExpressionSyntax node, MemberAccessExpressionSyntax memberAccess, int srcReg)
         {
-            string structName = memberAccess.Expression.ToString();
-            string fieldName = memberAccess.Name.ToString();
-
-            if (context.StackMap.TryGetValue(structName, out var stackVar))
+            var symbolInfo = context.SemanticModel.GetSymbolInfo(memberAccess).Symbol;
+            if (symbolInfo is IFieldSymbol fieldSymbol)
             {
-                if (stackVar.Metadata.FieldOffsets.TryGetValue(fieldName, out int fieldOffset))
-                {
-                    int totalOffset = stackVar.StackOffset + fieldOffset;
+                string fieldName = fieldSymbol.Name;
+                string typeName = fieldSymbol.ContainingType.ToDisplayString();
 
-                    if (node.IsKind(SyntaxKind.SimpleAssignmentExpression))
+                if (context.Class.Global.Childs.TryGetValue(typeName, out var typeCtx) && typeCtx is TypeCompilationContext tcc)
+                {
+                    if (tcc.FieldOffsets.TryGetValue(fieldName, out int fieldOffset))
                     {
-                        context.Emit($"STR R{srcReg}, [SP, #{totalOffset}] @ {structName}.{fieldName} = val");
+                        string structName = memberAccess.Expression.ToString();
+                        
+                        if (context.StackMap.TryGetValue(structName, out var stackVar))
+                        {
+                            ASMInstructions.EmitMemoryAccess(false, srcReg, 13, stackVar.StackOffset + fieldOffset, context);
+                        }
+                        else
+                        {
+                            int baseReg = context.NextFreeRegister++;
+                            ASMInstructions.EmitExpression(memberAccess.Expression, baseReg, context, 0);
+                            ASMInstructions.EmitMemoryAccess(false, srcReg, baseReg, fieldOffset, context);
+                            context.NextFreeRegister--;
+                        }
                     }
                     else
                     {
-                        // Составное: config.Pin |= rSrc;
-                        int tempReg = 0; // Используем r0 как временный для вычислений
-                        context.Emit($"LDR R{tempReg}, [SP, #{totalOffset}] @ Load {structName}.{fieldName}");
-
-                        SyntaxKind opKind = node.Kind() switch
-                        {
-                            SyntaxKind.OrAssignmentExpression => SyntaxKind.BitwiseOrExpression,   // Исправлено
-                            SyntaxKind.AndAssignmentExpression => SyntaxKind.BitwiseAndExpression, // Исправлено
-                            SyntaxKind.AddAssignmentExpression => SyntaxKind.AddExpression,
-                            _ => SyntaxKind.None
-                        };
-
-                        if (opKind != SyntaxKind.None)
-                        {
-                            ASMInstructions.EmitArithmeticOp(opKind, tempReg, tempReg, srcReg, context);
-                            context.Emit($"STR R{tempReg}, [SP, #{totalOffset}] @ Store updated {structName}.{fieldName}");
-                        }
+                        context.Emit($"@ Field {fieldName} not found in offsets for {typeName}");
                     }
                 }
-            }
-            else
-            {
-                throw new Exception($"Структура {structName} не найдена на стеке");
+                else
+                {
+                    context.Emit($"@ Type {typeName} metadata not found for field {fieldName}");
+                }
             }
         }
         private void HandleLocalAssignment(AssignmentExpressionSyntax node, int destReg, int srcReg)
