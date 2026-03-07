@@ -200,15 +200,15 @@ namespace NETMCUCompiler.CodeBuilder
             else if (node.Right is IdentifierNameSyntax id)
             {
                 // 1. Проверяем, константа ли это (d1, Program.d2)
-                if (TryGetAsConstant(id, context, out object constVal))
+                if (context.Class.Global.Backend.TryGetAsConstant(context, id, out object constVal))
                 {
                     EmitMovImmediate(rightTemp, (int)constVal, context); // Грузим константу в r(rightTemp)
                     EmitArithmeticOp(node.Kind(), targetReg, leftReg, rightTemp, context);
                 }
                 // 2. Если это переменная (a, b...)
-                else if (context.RegisterMap.TryGetValue(id.Identifier.Text, out int rReg))
+                else if (context.RegisterMap.TryGetValue(id.Identifier.Text, out int rightReg))
                 {
-                    EmitArithmeticOp(node.Kind(), targetReg, leftReg, rReg, context);
+                    EmitArithmeticOp(node.Kind(), targetReg, leftReg, rightReg, context);
                 }
             }
             else
@@ -223,14 +223,13 @@ namespace NETMCUCompiler.CodeBuilder
         {
             if (expr is IdentifierNameSyntax id && context.RegisterMap.TryGetValue(id.Identifier.Text, out int reg)) return reg;
 
-            if (TryGetAsConstant(expr, context, out object val))
+            if (context.Class.Global.Backend.TryGetAsConstant(context, expr, out object val))
             {
                 EmitMovImmediate(tempOffset, (int)val, context);
                 return tempOffset;
             }
 
-            // Если это сложное выражение, вычисляем в текущий tempOffset
-            EmitExpression(expr, tempOffset, context, tempOffset);
+            EmitExpression(expr, tempOffset, context, tempOffset + 1);
             return tempOffset;
         }
 
@@ -1156,7 +1155,7 @@ namespace NETMCUCompiler.CodeBuilder
                         context.Emit($"BLX r{methodPtrReg} @ Invoke Delegate");
                         context.Write16((ushort)(0x4780 | (methodPtrReg << 3)));
 
-                        context.NextFreeRegister -= 2; 
+                        context.NextFreeRegister--; // interfaceFuncPtrReg
                         context.NextFreeRegister -= delArgs.Count;
 
                         if (delStackArgsCount > 0)

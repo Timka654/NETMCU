@@ -257,7 +257,7 @@ namespace NETMCUCompiler.CodeBuilder
                         if (@var.Initializer?.Value is LiteralExpressionSyntax literal)
                         {
                             var fullName = GetFullNodeName(@var);
-                            int val = ASMInstructions.ParseLiteral(literal, null);
+                            int val = context.Backend.ParseLiteral(context, literal);
 
                             if (isPublic)
                                 context.RegisterConstant(fullName, val);
@@ -335,7 +335,7 @@ namespace NETMCUCompiler.CodeBuilder
                 foreach (var v in localConst.Declaration.Variables)
                 {
                     if (v.Initializer?.Value is LiteralExpressionSyntax lit)
-                        method.RegisterConstant(v.Identifier.Text, ASMInstructions.ParseLiteral(lit, method));
+                        method.RegisterConstant(v.Identifier.Text, method.Class.Global.Backend.ParseLiteral(method.Class.Global, lit));
                 }
             }
 
@@ -377,7 +377,7 @@ namespace NETMCUCompiler.CodeBuilder
 
             method.Class.Global.Backend.GenerateMethodEpilogue(method);
             // Move ResolveJumps logic to PostProcess method on Backend maybe?
-            ASMInstructions.ResolveJumps(method);
+            method.Class.Global.Backend.ResolveJumps(method);
         }
     }
 }

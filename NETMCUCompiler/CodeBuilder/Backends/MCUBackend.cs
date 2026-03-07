@@ -658,7 +658,141 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         }
 
         public abstract void EmitJump(MethodCompilationContext context, string label);
-        public abstract void EmitLogicalCondition(MethodCompilationContext context, ExpressionSyntax condition, string trueLabel, string falseLabel);
+        
+        public virtual void EmitLogicalCondition(MethodCompilationContext context, ExpressionSyntax condition, string trueLabel, string falseLabel)
+        {
+            if (condition is ParenthesizedExpressionSyntax paren)
+            {
+                EmitLogicalCondition(context, paren.Expression, trueLabel, falseLabel);
+                return;
+            }
+
+            if (condition is BinaryExpressionSyntax bin)
+            {
+                if (bin.IsKind(SyntaxKind.LogicalOrExpression))
+                {
+                    EmitLogicalCondition(context, bin.Left, trueLabel, "");
+                    EmitLogicalCondition(context, bin.Right, trueLabel, falseLabel);
+                    return;
+                }
+                if (bin.IsKind(SyntaxKind.LogicalAndExpression))
+                {
+                    string nextAnd = $"L_AND_{context.LabelCount++}";
+                    EmitLogicalCondition(context, bin.Left, nextAnd, falseLabel);
+                    context.MarkLabel(nextAnd);
+                    EmitLogicalCondition(context, bin.Right, trueLabel, falseLabel);
+                    return;
+                }
+
+                if (bin.IsKind(SyntaxKind.EqualsExpression) || bin.IsKind(SyntaxKind.NotEqualsExpression) ||
+                    bin.IsKind(SyntaxKind.GreaterThanExpression) || bin.IsKind(SyntaxKind.LessThanExpression) ||
+                    bin.IsKind(SyntaxKind.GreaterThanOrEqualExpression) || bin.IsKind(SyntaxKind.LessThanOrEqualExpression))
+                {
+                    int startReg = context.NextFreeRegister;
+                    int leftReg = context.NextFreeRegister++;
+                    EmitExpressionValue(context, bin.Left, leftReg);
+
+                    int rightReg = context.NextFreeRegister++;
+                    EmitExpressionValue(context, bin.Right, rightReg);
+
+                    EmitCompare(context, leftReg, rightReg);
+
+                    string op = bin.Kind() switch
+                    {
+                        SyntaxKind.EqualsExpression => "EQ",
+                        SyntaxKind.NotEqualsExpression => "NE",
+                        SyntaxKind.GreaterThanExpression => "GT",
+                        SyntaxKind.LessThanExpression => "LT",
+                        SyntaxKind.GreaterThanOrEqualExpression => "GE",
+                        SyntaxKind.LessThanOrEqualExpression => "LE",
+                        _ => "EQ"
+                    };
+
+                    if (!string.IsNullOrEmpty(trueLabel))
+                        EmitBranch(context, trueLabel, op);
+
+                    if (!string.IsNullOrEmpty(falseLabel))
+                    {
+                        string invOp = op switch { "EQ" => "NE", "NE" => "EQ", "GT" => "LE", "LT" => "GE", "GE" => "LT", "LE" => "GT", _ => "NE" };
+                        EmitBranch(context, falseLabel, invOp);
+                    }
+
+                    context.NextFreeRegister = startReg;
+                    return;
+                }
+            }
+
+            if (condition is PrefixUnaryExpressionSyntax unary && unary.IsKind(SyntaxKind.LogicalNotExpression))
+            {
+                int startReg = context.NextFreeRegister;
+                int reg = context.NextFreeRegister++;
+                EmitExpressionValue(context, unary.Operand, reg);
+                EmitCompareImmediate(context, reg, 0);
+
+                if (!string.IsNullOrEmpty(trueLabel))
+                    EmitBranch(context, trueLabel, "EQ");
+                if (!string.IsNullOrEmpty(falseLabel))
+                    EmitBranch(context, falseLabel, "NE");
+
+                context.NextFreeRegister = startReg;
+                return;
+            }
+
+            // Fallback: evaluate anything as boolean expression directly
+            int condStartReg = context.NextFreeRegister;
+            int condReg = context.NextFreeRegister++;
+            EmitExpressionValue(context, condition, condReg);
+            EmitCompareImmediate(context, condReg, 0);
+
+            if (!string.IsNullOrEmpty(trueLabel))
+                EmitBranch(context, trueLabel, "NE");
+            if (!string.IsNullOrEmpty(falseLabel))
+                EmitBranch(context, falseLabel, "EQ");
+
+            context.NextFreeRegister = condStartReg;
+        }
+
+        public virtual int ParseLiteral(CompilationContext globalContext, LiteralExpressionSyntax literal)
+        {
+            if (literal.Token.ValueText == "true") return 1;
+            if (literal.Token.ValueText == "false") return 0;
+            if (literal.Token.Value == null) return 0;
+
+            if (literal.IsKind(SyntaxKind.StringLiteralExpression))
+            {
+                if (globalContext != null)
+                {
+                    var strValue = literal.Token.ValueText;
+                    var label = globalContext.RegisterStringLiteral(strValue);
+                    return 0;
+                }
+                return 0;
+            }
+
+            try
+            {
+                return Convert.ToInt32(literal.Token.Value);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        public virtual bool TryGetAsConstant(MethodCompilationContext context, ExpressionSyntax expr, out object value)
+        {
+            value = 0;
+            if (expr is LiteralExpressionSyntax literal) { value = ParseLiteral(context.Class.Global, literal); return true; }
+
+            if (expr is IdentifierNameSyntax id && context.TryGetConstant(context.SemanticModel.GetSymbolInfo(expr).Symbol.ToDisplayString(), out value))
+                return true;
+
+            if (expr is MemberAccessExpressionSyntax ma && context.TryGetConstant(context.SemanticModel.GetSymbolInfo(expr).Symbol.ToDisplayString(), out value))
+                return true;
+
+            return false;
+        }
+
         public abstract void EmitExpressionValue(MethodCompilationContext context, ExpressionSyntax expr, int targetReg);
         public abstract void EmitCall(MethodCompilationContext context, string name, bool isStatic, bool isNative = false);
         public abstract void EmitMovImmediate(MethodCompilationContext context, int reg, int val);
@@ -670,5 +804,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         public abstract void EmitOpWithImmediate(MethodCompilationContext context, SyntaxKind op, int target, int left, int value);
         public abstract void EmitAddressOf(MethodCompilationContext context, ExpressionSyntax expr, int targetReg, int tempOffset = 0);
         public abstract void EmitCompareImmediate(MethodCompilationContext context, int reg, int imm);
+
+        public abstract void ResolveJumps(MethodCompilationContext context);
     }
 }

@@ -1,0 +1,153 @@
+
+>         public override void GenerateIfStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateTrueBlock, Action generateFalseBlock)
+          {
+              string trueLabel = $"L_TRUE_{context.LabelCount++}";
+              string falseLabel = $"L_FALSE_{context.LabelCount++}";
+              string endLabel = $"L_END_{context.LabelCount++}";
+  
+              // Разбираем цепочку условий
+              ASMInstructions.EmitLogicalCondition(condition, trueLabel, falseLabel, context);
+  
+              // Тело TRUE
+              context.MarkLabel(trueLabel);
+              generateTrueBlock();
+              ASMInstructions.EmitJump(endLabel, context);
+  
+              // Тело FALSE (или следующий Else If)
+              context.MarkLabel(falseLabel);
+              if (generateFalseBlock != null)
+              {
+                  generateFalseBlock();
+              }
+  
+              context.MarkLabel(endLabel);
+          }
+  
+          public override void GenerateWhileStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateBody, Action<string, string> registerLoopContext, Action popLoopContext)
+          {
+              string startLabel = context.NextLabel("WHILE_START");
+              string endLabel = context.NextLabel("WHILE_END");
+  
+              registerLoopContext(endLabel, startLabel);
+  
+              context.MarkLabel(startLabel);
+  
+              ASMInstructions.EmitLogicalCondition(condition, "", endLabel, context);
+  
+              generateBody();
+  
+              ASMInstructions.EmitJump(startLabel, context);
+  
+              context.MarkLabel(endLabel);
+  
+              popLoopContext();
+          }
+  
+          public override void GenerateDoStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateBody, Action<string, string> registerLoopContext, Action popLoopContext)
+          {
+              string startLabel = context.NextLabel("DO_START");
+              string endLabel = context.NextLabel("DO_END");
+              string condLabel = context.NextLabel("DO_COND"); // Для continue
+  
+              registerLoopContext(endLabel, condLabel);
+  
+              context.MarkLabel(startLabel);
+  
+              generateBody();
+  
+              context.MarkLabel(condLabel);
+  
+              // Проверяем условие. Если true -> прыгаем в начало (startLabel).
+              ASMInstructions.EmitLogicalCondition(condition, startLabel, endLabel, context);
+  
+              context.MarkLabel(endLabel);
+  
+              popLoopContext();
+          }
+  
+          public override void GenerateForStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateInit, Action generateBody, Action generateIncrementor, Action<string, string> registerLoopContext, Action popLoopContext)
+          {
+              // 1. Инициализация (может быть объявление переменной или просто присваивание)
+              generateInit?.Invoke();
+  
+              string startLabel = context.NextLabel("FOR_START");
+              string endLabel = context.NextLabel("FOR_END");
+              string incLabel = context.NextLabel("FOR_INC"); // Для continue
+  
+              registerLoopContext(endLabel, incLabel);
+  
+              // Метка начала
+              context.MarkLabel(startLabel);
+  
+              // 2. Условие
+              if (condition != null)
+              {
+                  ASMInstructions.EmitLogicalCondition(condition, "", endLabel, context);
+              }
+  
+              // 3. Тело
+              generateBody?.Invoke();
+  
+              // Метка инкремента (сюда будет прыгать continue, если мы его реализуем)
+              context.MarkLabel(incLabel);
+  
+              // 4. Инкремент
+              generateIncrementor?.Invoke();
+  
+              // 5. Прыжок на начало
+              ASMInstructions.EmitJump(startLabel, context);
+  
+              // Метка выхода
+              context.MarkLabel(endLabel);
+  
+              popLoopContext();
+          }
+  
+          public override void GenerateForEachStatement(MethodCompilationContext context, ForEachStatementSyntax node, Action generateBody, Action<string, string> registerLoopContext, Action popLoopContext)
+          {
+              string startLabel = context.NextLabel("FOREACH_START");
+              string endLabel = context.NextLabel("FOREACH_END");
+              string incLabel = context.NextLabel("FOREACH_INC");
+  
+              registerLoopContext(endLabel, incLabel);
+  
+              var collectionType = context.SemanticModel.GetTypeInfo(node.Expression).Type;
+              bool isArray = collectionType?.TypeKind == TypeKind.Array;
+  
+              int indexReg = 0;
+              int lengthReg = 0;
+              int collectionReg = 0;
+              int enumReg = 0;
+              int itemReg = context.NextFreeRegister++;
+              context.RegisterMap[node.Identifier.Text] = itemReg;
+  
+              if (isArray)
+              {
+                  collectionReg = context.NextFreeRegister++;
+                  ASMInstructions.EmitExpression(node.Expression, collectionReg, context);
+  
+                  indexReg = context.NextFreeRegister++;
+                  ASMInstructions.EmitMovImmediate(indexReg, 0, context);
+  
+                  lengthReg = context.NextFreeRegister++;
+  
+                  int fourReg = context.NextFreeRegister++;
+                  ASMInstructions.EmitMovImmediate(fourReg, 4, context);
+  
+                  int lenAddrReg = context.NextFreeRegister++;
+                  ASMInstructions.EmitArithmeticOp(SyntaxKind.SubtractExpression, lenAddrReg, collectionReg, fourReg, context);
+                  context.Emit($"@ Read array length");
+                  ASMInstructions.EmitMemoryAccess(true, lengthReg, lenAddrReg, 0, context);
+                  context.NextFreeRegister -= 2;
+  
+                  context.MarkLabel(startLabel);
+  
+                  ASMInstructions.EmitCompare(indexReg, lengthReg, context);
+                  ASMInstructions.EmitBranch(endLabel, "GE", context);
+  
+                  int offsetReg = context.NextFreeRegister++;
+                  ASMInstructions.EmitMovRegister(offsetReg, indexReg, context);
+                  int elemSizeReg = context.NextFreeRegister++;
+                  ASMInstructions.EmitMovImmediate(elemSizeReg, 4, context);
+                  ASMInstructions.EmitArithmeticOp(SyntaxKind.MultiplyExpression, offsetReg, offsetReg, elemSizeReg, context);
+
