@@ -227,11 +227,15 @@ namespace NETMCUCompiler
         }
 
 
-        private byte[] BuildRoDataSection(out Dictionary<string, uint> offsets)
+        private byte[] BuildRoDataSection(out Dictionary<string, uint> offsets, out List<(int OffsetInSection, string TypeLiteral)> typePatches)
         {
             offsets = new Dictionary<string, uint>();
+            typePatches = new List<(int, string)>();
             using var ms = new MemoryStream();
             using var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
+
+            var stringType = compilationContext.SemanticModel.Compilation.GetTypeByMetadataName("System.String");
+            string stringTypeId = stringType != null ? compilationContext.RegisterTypeLiteral(stringType) : null;
 
             // Используем StringLiterals из главного контекста компиляции
             foreach (var literal in compilationContext.StringLiterals.OrderBy(l => l.Key)) // Сортируем для стабильной сборки
@@ -244,6 +248,13 @@ namespace NETMCUCompiler
 
                 // Сохраняем смещение для этого символа
                 offsets[literal.Key] = (uint)ms.Position;
+
+                if (Options.TypeHeader && stringTypeId != null)
+                {
+                    typePatches.Add(((int)ms.Position, stringTypeId));
+                    writer.Write((uint)0); // Placeholder for TypeHeader
+                    writer.Write((uint)literal.Value.Length); // Length field
+                }
 
                 // Записываем строку в кодировке UTF-8 с нулевым терминатором
                 var bytes = Encoding.UTF8.GetBytes(literal.Value);
@@ -448,7 +459,7 @@ namespace NETMCUCompiler
             // --- СОЗДАНИЕ И ДОБАВЛЕНИЕ СЕКЦИИ .RODATA ---
 
             // 1. Создаем бинарный блок с данными и получаем смещения внутри него
-            var roDataBytes = BuildRoDataSection(out var roDataOffsets);
+            var roDataBytes = BuildRoDataSection(out var roDataOffsets, out var roDataTypePatches);
 
             // 2. Выравниваем текущую позицию в прошивке
             while (finalImage.Position % 4 != 0)
@@ -456,6 +467,7 @@ namespace NETMCUCompiler
                 finalImage.WriteByte(0);
             }
 
+            int roDataBinOffset = (int)finalImage.Position;
             // 3. Запоминаем абсолютный адрес начала секции .rodata
             uint roDataSectionAddr = flashBaseAddress + (uint)finalImage.Position;
 
@@ -513,6 +525,23 @@ namespace NETMCUCompiler
             finalImage.Write(typeDataBytes, 0, typeDataBytes.Length);
 
             byte[] binary = finalImage.ToArray();
+
+            // Patch String literal TypeHeaders
+            foreach (var patch in roDataTypePatches)
+            {
+                if (globalSymbolTable.TryGetValue(patch.TypeLiteral, out uint typeAddr))
+                {
+                    int pos = roDataBinOffset + patch.OffsetInSection;
+                    binary[pos] = (byte)(typeAddr & 0xFF);
+                    binary[pos + 1] = (byte)((typeAddr >> 8) & 0xFF);
+                    binary[pos + 2] = (byte)((typeAddr >> 16) & 0xFF);
+                    binary[pos + 3] = (byte)((typeAddr >> 24) & 0xFF);
+                }
+                else
+                {
+                    Console.WriteLine($"[WARNING] Reference {patch.TypeLiteral} not found in global symbol table inside RoData patch. Filling with 0.");
+                }
+            }
 
 
             // 2. Добавляем методы наших библиотек

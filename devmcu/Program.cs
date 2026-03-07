@@ -18,6 +18,8 @@ namespace devmcu
         public override int GetValue() { return 42; }
     }
 
+    record Person(string Name, int Age);
+
     public class Program
     {
         // Для Black Pill F401: LED на PC13
@@ -44,6 +46,17 @@ namespace devmcu
             TestVirtualsAndInterfaces();
             TestArrays();
             TestBoxingAndCasting();
+            TestRecords();
+        }
+
+        public static void TestRecords()
+        {
+            var p1 = new Person("Alice", 25);
+            var p2 = new Person("Bob", 30);
+            var p3 = new Person("Alice", 25);
+
+            bool eq = p1 == p3; // should be true
+            int age = p1.Age;
         }
 
         public static void TestDelegates()
