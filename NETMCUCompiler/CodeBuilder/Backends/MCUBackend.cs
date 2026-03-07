@@ -802,172 +802,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             return false;
         }
 
-        protected virtual void EmitArrayCreation(MethodCompilationContext context, InitializerExpressionSyntax initializer, ExpressionSyntax sizeExpr, ITypeSymbol typeSymbol, int targetReg, int tempOffset)
-        {
-            int lenReg = context.NextFreeRegister++;
-            if (sizeExpr != null && !(sizeExpr is OmittedArraySizeExpressionSyntax)) {
-                EmitExpressionValue(context, sizeExpr, lenReg, tempOffset);
-            } else if (initializer != null) {
-                EmitMovImmediate(context, lenReg, initializer.Expressions.Count);
-            } else {
-                EmitMovImmediate(context, lenReg, 0);
-            }
-
-            int elementSize = 4; // default
-            if (typeSymbol is IArrayTypeSymbol arrayType)
-            {
-                var elType = arrayType.ElementType;
-                if (elType.SpecialType == SpecialType.System_Byte || elType.SpecialType == SpecialType.System_SByte || elType.SpecialType == SpecialType.System_Boolean) elementSize = 1;
-                else if (elType.SpecialType == SpecialType.System_Int16 || elType.SpecialType == SpecialType.System_UInt16 || elType.SpecialType == SpecialType.System_Char) elementSize = 2;
-                else if (elType.SpecialType == SpecialType.System_Int64 || elType.SpecialType == SpecialType.System_UInt64 || elType.SpecialType == SpecialType.System_Double) elementSize = 8;
-                else if (elType.TypeKind == TypeKind.Struct)
-                    elementSize = Math.Max(1, elType.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4);
-            }
-
-            int sizeReg = context.NextFreeRegister++;
-            bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
-            int headerSize = typeHeader ? 8 : 4;
-
-            EmitMovImmediate(context, sizeReg, elementSize);
-            EmitArithmeticOp(context, SyntaxKind.MultiplyExpression, sizeReg, lenReg, sizeReg);
-            EmitOpWithImmediate(context, SyntaxKind.AddExpression, sizeReg, sizeReg, headerSize);
-
-            EmitMovRegister(context, 0, sizeReg);
-            EmitCall(context, "NETMCU__Memory__Alloc", isStatic: true, isNative: true);
-
-            if (typeSymbol != null && typeHeader)
-            {
-                string targetName = typeSymbol.ToDisplayString();
-                string symbolName = context.Class.Global.RegisterTypeLiteral(typeSymbol);
-                context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
-
-                int tmpReg = context.NextFreeRegister++;
-                context.Emit($"@ Write TypeHeader for array {targetName}");
-                context.Emit($"LDR r{tmpReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
-                context.Bin.Write(new byte[8], 0, 8);
-                context.Emit($"STR r{tmpReg}, [r0, #0]");
-                context.NextFreeRegister--;
-
-                context.Emit($"STR r{lenReg}, [r0, #4] @ Array Length");
-            } 
-            else 
-            {
-                context.Emit($"STR r{lenReg}, [r0, #0] @ Array Length");
-            }
-
-            int arrayAllocReg = targetReg == 0 ? context.NextFreeRegister++ : targetReg;
-            if (arrayAllocReg != 0) EmitMovRegister(context, arrayAllocReg, 0);
-
-            if (initializer != null && initializer.Expressions.Count > 0) 
-            {
-                int valReg = context.NextFreeRegister++;
-                int idxReg = context.NextFreeRegister++;
-                int ptrReg = context.NextFreeRegister++;
-                int iterReg = context.NextFreeRegister++;
-
-                int counter = 0;
-                foreach(var valExpr in initializer.Expressions)
-                {
-                    if (valExpr is ArrayCreationExpressionSyntax nestedArray)
-                    {
-                        var nestedTypeSymbol = context.SemanticModel.GetTypeInfo(nestedArray).Type;
-                        var nestedSizeExpr = nestedArray.Type.RankSpecifiers.FirstOrDefault()?.Sizes.FirstOrDefault();
-                        EmitArrayCreation(context, nestedArray.Initializer, nestedSizeExpr, nestedTypeSymbol, valReg, tempOffset);
-                    }
-                    else if (valExpr is ImplicitArrayCreationExpressionSyntax nestedImplArray)
-                    {
-                        var nestedTypeSymbol = context.SemanticModel.GetTypeInfo(nestedImplArray).Type;
-                        EmitArrayCreation(context, nestedImplArray.Initializer, null, nestedTypeSymbol, valReg, tempOffset);
-                    }
-                    else
-                    {
-                        EmitExpressionValue(context, valExpr, valReg, tempOffset);
-                    }
-
-                    EmitMovImmediate(context, idxReg, counter);
-                    EmitMovImmediate(context, iterReg, elementSize);
-                    EmitArithmeticOp(context, SyntaxKind.MultiplyExpression, idxReg, idxReg, iterReg);
-                    EmitOpWithImmediate(context, SyntaxKind.AddExpression, idxReg, idxReg, headerSize);
-                    EmitArithmeticOp(context, SyntaxKind.AddExpression, ptrReg, arrayAllocReg, idxReg);
-
-                    if (elementSize == 1) context.Emit($"STRB r{valReg}, [r{ptrReg}, #0]");
-                    else if (elementSize == 2) context.Emit($"STRH r{valReg}, [r{ptrReg}, #0]");
-                    else context.Emit($"STR r{valReg}, [r{ptrReg}, #0]"); // Ignoring 8-byte structs for now 
-
-                    counter++;
-                }
-
-                context.NextFreeRegister -= 4;
-            }
-
-            if (targetReg == 0) context.NextFreeRegister--; // arrayAllocReg
-            context.NextFreeRegister -= 2; // sizeReg, lenReg
-        }
-
-        protected virtual void EmitDelegateCreation(MethodCompilationContext context, IMethodSymbol targetMethod, ExpressionSyntax nodeExpr, ITypeSymbol delegateType, int targetReg, int tempOffset)
-        {
-            int size = context.Class.Global.BuildingContext.Options?.TypeHeader == true ? 12 : 8; // delegate size is 8 bytes + 4 for header
-            EmitMovImmediate(context, 0, size);
-
-            // Call the native allocator (returns ptr in R0)
-            EmitCall(context, "NETMCU__Memory__Alloc", isStatic: true, isNative: true);
-
-            bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
-            if (typeHeader)
-            {
-                string targetName = delegateType.ToDisplayString();
-                string symbolName = context.Class.Global.RegisterTypeLiteral(delegateType);
-                context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
-
-                int tmpReg = context.NextFreeRegister++;
-                context.Emit($"@ Write TypeHeader for delegate {targetName}");
-                context.Emit($"LDR r{tmpReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
-                context.Bin.Write(new byte[8], 0, 8);
-
-                context.Emit($"STR r{tmpReg}, [r0, #0]"); // Put type ptr at beginning of allocation
-                context.NextFreeRegister--;
-            }
-
-            int targetOffset = typeHeader ? 4 : 0;
-            int ptrOffset = targetOffset + 4;
-            if (context.Class.Global.Childs.TryGetValue("System.Delegate", out var delTypeCtx) && delTypeCtx is TypeCompilationContext delTcc)
-            {
-                delTcc.FieldOffsets.TryGetValue("Target", out targetOffset);
-                delTcc.FieldOffsets.TryGetValue("MethodPtr", out ptrOffset);
-            }
-
-            int delObjReg = targetReg == 0 ? 0 : targetReg;
-            if (targetReg != 0) EmitMovRegister(context, delObjReg, 0);
-
-            int methodValReg = context.NextFreeRegister++;
-            string methodName = targetMethod.ToDisplayString();
-            context.Class.Global.AddRelocation(context, methodName, targetMethod.IsStatic, false, (int)context.Bin.Length);
-            context.Emit($"LDR r{methodValReg}, ={methodName} ; (placeholder for address)");
-            context.Bin.Write(new byte[8], 0, 8);
-
-            context.Emit($"STR r{methodValReg}, [r{delObjReg}, #{ptrOffset}]");
-
-            int targetValReg = context.NextFreeRegister++;
-            if (targetMethod.IsStatic)
-            {
-                EmitMovImmediate(context, targetValReg, 0);
-            }
-            else
-            {
-                if (nodeExpr is MemberAccessExpressionSyntax delMemberAccess)
-                {
-                    EmitExpressionValue(context, delMemberAccess.Expression, targetValReg, tempOffset);
-                }
-                else
-                {
-                    // Implicit this
-                    context.Emit($"MOV r{targetValReg}, r4");
-                }
-            }
-            context.Emit($"STR r{targetValReg}, [r{delObjReg}, #{targetOffset}]");
-
-            context.NextFreeRegister -= 2;
-        }
+        public abstract void EmitDelegateCreation(MethodCompilationContext context, IMethodSymbol targetMethod, ExpressionSyntax nodeExpr, ITypeSymbol delegateType, int targetReg, int tempOffset);
 
         public virtual void EmitArithmetic(BinaryExpressionSyntax node, int targetReg, MethodCompilationContext context, int tempOffset = 0)
         {
@@ -1417,12 +1252,63 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             {
                 var typeSymbol = context.SemanticModel.GetTypeInfo(arrayCreation).Type;
                 var sizeExpr = arrayCreation.Type.RankSpecifiers.FirstOrDefault()?.Sizes.FirstOrDefault();
-                EmitArrayCreation(context, arrayCreation.Initializer, sizeExpr, typeSymbol, targetReg, tempOffset);
+                
+                int elementSize = 4;
+                if (typeSymbol is IArrayTypeSymbol arrayType)
+                {
+                    var elType = arrayType.ElementType;
+                    if (elType.SpecialType == SpecialType.System_Byte || elType.SpecialType == SpecialType.System_SByte || elType.SpecialType == SpecialType.System_Boolean) elementSize = 1;
+                    else if (elType.SpecialType == SpecialType.System_Int16 || elType.SpecialType == SpecialType.System_UInt16 || elType.SpecialType == SpecialType.System_Char) elementSize = 2;
+                    else if (elType.SpecialType == SpecialType.System_Int64 || elType.SpecialType == SpecialType.System_UInt64 || elType.SpecialType == SpecialType.System_Double) elementSize = 8;
+                    else if (elType.TypeKind == TypeKind.Struct)
+                        elementSize = Math.Max(1, elType.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4);
+                }
+
+                bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
+                string symbolName = typeHeader && typeSymbol != null ? context.Class.Global.RegisterTypeLiteral(typeSymbol) : "";
+
+                var info = new ArrayCreationInfo(
+                    TypeSymbol: typeSymbol,
+                    SizeExpression: sizeExpr,
+                    Initializer: arrayCreation.Initializer,
+                    ElementSize: elementSize,
+                    HasTypeHeader: typeHeader,
+                    HeaderSize: typeHeader ? 8 : 4,
+                    SymbolName: symbolName,
+                    TargetReg: targetReg
+                );
+
+                EmitArrayCreation(context, info, tempOffset);
             }
             else if (expr is ImplicitArrayCreationExpressionSyntax implicitArray)
             {
                 var typeSymbol = context.SemanticModel.GetTypeInfo(implicitArray).Type;
-                EmitArrayCreation(context, implicitArray.Initializer, null, typeSymbol, targetReg, tempOffset);
+                int elementSize = 4;
+                if (typeSymbol is IArrayTypeSymbol arrayType)
+                {
+                    var elType = arrayType.ElementType;
+                    if (elType.SpecialType == SpecialType.System_Byte || elType.SpecialType == SpecialType.System_SByte || elType.SpecialType == SpecialType.System_Boolean) elementSize = 1;
+                    else if (elType.SpecialType == SpecialType.System_Int16 || elType.SpecialType == SpecialType.System_UInt16 || elType.SpecialType == SpecialType.System_Char) elementSize = 2;
+                    else if (elType.SpecialType == SpecialType.System_Int64 || elType.SpecialType == SpecialType.System_UInt64 || elType.SpecialType == SpecialType.System_Double) elementSize = 8;
+                    else if (elType.TypeKind == TypeKind.Struct)
+                        elementSize = Math.Max(1, elType.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4);
+                }
+
+                bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
+                string symbolName = typeHeader && typeSymbol != null ? context.Class.Global.RegisterTypeLiteral(typeSymbol) : "";
+
+                var info = new ArrayCreationInfo(
+                    TypeSymbol: typeSymbol,
+                    SizeExpression: null,
+                    Initializer: implicitArray.Initializer,
+                    ElementSize: elementSize,
+                    HasTypeHeader: typeHeader,
+                    HeaderSize: typeHeader ? 8 : 4,
+                    SymbolName: symbolName,
+                    TargetReg: targetReg
+                );
+
+                EmitArrayCreation(context, info, tempOffset);
             }
             else if (expr is ObjectCreationExpressionSyntax objectCreation)
             {
@@ -1525,205 +1411,54 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             }
             else if (expr is InvocationExpressionSyntax invocation)
             {
-                var methodSymbol = context.SemanticModel.GetSymbolInfo(invocation).Symbol as IMethodSymbol 
-                                ?? context.SemanticModel.GetMemberGroup(invocation).FirstOrDefault() as IMethodSymbol;
+                var methodSymbol = context.SemanticModel.GetSymbolInfo(invocation).Symbol as Microsoft.CodeAnalysis.IMethodSymbol 
+                                ?? context.SemanticModel.GetMemberGroup(invocation).FirstOrDefault() as Microsoft.CodeAnalysis.IMethodSymbol;
 
                 var delegateType = context.SemanticModel.GetTypeInfo(invocation.Expression).Type;
-                bool isDelegateInvoke = delegateType != null && delegateType.TypeKind == TypeKind.Delegate;
-                if (!isDelegateInvoke && methodSymbol != null && methodSymbol.ContainingType?.TypeKind == TypeKind.Delegate)
+                bool isDelegateInvoke = delegateType != null && delegateType.TypeKind == Microsoft.CodeAnalysis.TypeKind.Delegate;
+                if (!isDelegateInvoke && methodSymbol != null && methodSymbol.ContainingType?.TypeKind == Microsoft.CodeAnalysis.TypeKind.Delegate)
                 {
-                    isDelegateInvoke = true; // Handle case where methodSymbol is Delegate.Invoke
+                    isDelegateInvoke = true; 
                 }
 
-                if (methodSymbol == null || isDelegateInvoke)
+                bool isBaseCall = false;
+                bool isInterfaceCall = false;
+                bool isVirtualCall = false;
+                string nativeFunctionName = null;
+                
+                if (methodSymbol != null)
                 {
-                    if (isDelegateInvoke)
-                    {
-                        int delegateReg = context.NextFreeRegister++;
-                        var delegateExpression = invocation.Expression;
-                        if (delegateExpression is MemberAccessExpressionSyntax ma && ma.Name.Identifier.Text == "Invoke")
-                        {
-                            delegateExpression = ma.Expression;
-                        }
-
-                        EmitExpressionInternal(context, delegateExpression, delegateReg, tempOffset);
-
-                        int targetOffset = context.Class.Global.BuildingContext.Options?.TypeHeader == true ? 4 : 0;
-                        int ptrOffset = targetOffset + 4;
-                        if (context.Class.Global.Childs.TryGetValue("System.Delegate", out var delTypeCtx) && delTypeCtx is TypeCompilationContext delTcc)
-                        {
-                            delTcc.FieldOffsets.TryGetValue("Target", out targetOffset);
-                            delTcc.FieldOffsets.TryGetValue("MethodPtr", out ptrOffset);
-                        }
-
-                        var delArgs = invocation.ArgumentList.Arguments;
-                        List<int> delArgRegs = new();
-                        for (int i = 0; i < delArgs.Count; i++)
-                        {
-                            var argument = delArgs[i];
-                            int safeReg = context.NextFreeRegister++;
-                            if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword))
-                                EmitAddressOf(context, argument.Expression, safeReg, tempOffset);
-                            else
-                                EmitExpressionValue(context, argument.Expression, safeReg, tempOffset);
-                            delArgRegs.Add(safeReg);
-                        }
-
-                        int delStackArgsCount = 0;
-                        for (int i = delArgs.Count - 1; i >= 0; i--)
-                        {
-                            int targetArgReg = i + 1;
-                            if (targetArgReg > 3)
-                            {
-                                context.Emit($"PUSH {{r{delArgRegs[i]}}}");
-                                context.Write16((ushort)(0xB400 | (1 << delArgRegs[i])));
-                                delStackArgsCount++;
-                            }
-                        }
-
-                        for (int i = 0; i < delArgs.Count; i++)
-                        {
-                            int targetArgReg = i + 1;
-                            if (targetArgReg <= 3)
-                                if (delArgRegs[i] != targetArgReg) EmitMovRegister(context, targetArgReg, delArgRegs[i]);
-                        }
-
-                        context.Emit($"LDR r0, [r{delegateReg}, #{targetOffset}] @ Load Target");
-                        int methodPtrReg = context.NextFreeRegister++;
-                        context.Emit($"LDR r{methodPtrReg}, [r{delegateReg}, #{ptrOffset}] @ Load MethodPtr");
-
-                        context.Emit($"BLX r{methodPtrReg} @ Invoke Delegate");
-                        context.Write16((ushort)(0x4780 | (methodPtrReg << 3)));
-
-                        context.NextFreeRegister--; // interfaceFuncPtrReg
-                        context.NextFreeRegister -= delArgs.Count;
-
-                        if (delStackArgsCount > 0)
-                        {
-                            context.Emit($"ADD SP, SP, #{delStackArgsCount * 4}");
-                            uint imm12 = (uint)(delStackArgsCount * 4);
-                            uint op = 0xF10D0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
-                            context.Write32(op);
-                        }
-
-                        if (targetReg != 0) EmitMovRegister(context, targetReg, 0);
-                    }
-                    return;
-                }
-
-                bool isBaseCall = invocation.Expression is MemberAccessExpressionSyntax m && m.Expression is BaseExpressionSyntax;
-                bool isInterfaceCall = !methodSymbol.IsStatic && !isBaseCall && methodSymbol.ContainingType.TypeKind == TypeKind.Interface;
-                bool isVirtualCall = !methodSymbol.IsStatic && !isBaseCall && !isInterfaceCall && 
-                                     (methodSymbol.IsVirtual || methodSymbol.IsAbstract || methodSymbol.IsOverride);
-
-                int regOffset = 0;
-                int instanceReg = 0;
-                int interfaceFuncPtrReg = 0;
-
-                if (!methodSymbol.IsStatic)
-                {
-                    instanceReg = context.NextFreeRegister++;
-                    if (invocation.Expression is MemberAccessExpressionSyntax invokationMemberAccess)
-                        EmitExpressionValue(context, invokationMemberAccess.Expression, instanceReg, tempOffset);
-                    else
-                        context.Emit($"MOV r{instanceReg}, r4"); // fallback "this"
-
-                    regOffset = 1;
-
-                    if (isInterfaceCall)
-                    {
-                        var ifaceMethods = methodSymbol.ContainingType.GetMembers().OfType<IMethodSymbol>().ToList();
-                        int methodIndex = ifaceMethods.IndexOf(methodSymbol.OriginalDefinition);
-                        if (methodIndex < 0) methodIndex = ifaceMethods.IndexOf(methodSymbol);
-
-                        context.Emit($"LDR r0, [r{instanceReg}, #0] @ read TypeMetadata");
-
-                        string symbolName = context.Class.Global.RegisterTypeLiteral(methodSymbol.ContainingType);
-                        context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
-                        context.Emit($"LDR r1, ={symbolName} ; (placeholder for MOVW/MOVT)");
-                        context.Bin.Write(new byte[8], 0, 8);
-
-                        EmitMovImmediate(context, 2, methodIndex);
-
-                        var typeHelperType = context.SemanticModel.Compilation.GetTypeByMetadataName("System.MCU.TypeHelper");
-                        var findInterfaceMethod = typeHelperType?.GetMembers("FindInterfaceMethod").OfType<IMethodSymbol>().FirstOrDefault();
-                        string helperTarget = findInterfaceMethod != null ? findInterfaceMethod.ToDisplayString() : "System.MCU.TypeHelper.FindInterfaceMethod(System.IntPtr, System.IntPtr, int)";
-
-                        EmitCall(context, helperTarget, isStatic: true, isNative: false);
-
-                        interfaceFuncPtrReg = context.NextFreeRegister++;
-                        EmitMovRegister(context, interfaceFuncPtrReg, 0);
-                    }
-                }
-
-                var args = invocation.ArgumentList.Arguments;
-                List<int> argRegs = new();
-                for (int i = 0; i < args.Count; i++)
-                {
-                    var argument = args[i];
-                    int safeReg = context.NextFreeRegister++;
-
-                    if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword))
-                        EmitAddressOf(context, argument.Expression, safeReg, tempOffset);
-                    else
-                        EmitExpressionValue(context, argument.Expression, safeReg, tempOffset);
-                    argRegs.Add(safeReg);
-                }
-
-                int stackArgsCount = 0;
-                for (int i = args.Count - 1; i >= 0; i--)
-                {
-                    int targetArgReg = i + regOffset; 
-                    if (targetArgReg > 3)
-                    {
-                        context.Emit($"PUSH {{r{argRegs[i]}}}");
-                        EmitPush(context, argRegs[i]);
-                        stackArgsCount++;
-                    }
-                }
-
-                if (!methodSymbol.IsStatic)
-                    EmitMovRegister(context, 0, instanceReg); // set 'this'
-
-                for (int i = 0; i < args.Count; i++)
-                {
-                    int targetArgReg = i + regOffset;
-                    if (targetArgReg <= 3)
-                        if (argRegs[i] != targetArgReg) EmitMovRegister(context, targetArgReg, argRegs[i]);
-                }
-
-                if (isInterfaceCall)
-                {
-                    context.Emit($"BLX r{interfaceFuncPtrReg}");
-                    context.Write16((ushort)(0x4780 | (interfaceFuncPtrReg << 3)));
-                    context.NextFreeRegister--; // interfaceFuncPtrReg
-                }
-                else
-                {
-                    string nativeFunctionName = methodSymbol.GetAttributes()
-                        .FirstOrDefault(a => a.AttributeClass?.Name.Contains("NativeCall") == true)?
+                    isBaseCall = invocation.Expression is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax m && m.Expression is Microsoft.CodeAnalysis.CSharp.Syntax.BaseExpressionSyntax;
+                    isInterfaceCall = !methodSymbol.IsStatic && !isBaseCall && methodSymbol.ContainingType.TypeKind == Microsoft.CodeAnalysis.TypeKind.Interface;
+                    isVirtualCall = !methodSymbol.IsStatic && !isBaseCall && !isInterfaceCall && 
+                                         (methodSymbol.IsVirtual || methodSymbol.IsAbstract || methodSymbol.IsOverride);
+                    
+                    nativeFunctionName = System.Linq.Enumerable.FirstOrDefault(methodSymbol.GetAttributes(), a => a.AttributeClass?.Name.Contains("NativeCall") == true)?
                         .ConstructorArguments.FirstOrDefault().Value?.ToString();
-
-                    string callTarget = nativeFunctionName ?? methodSymbol.ToDisplayString();
-                    EmitCall(context, callTarget, methodSymbol.IsStatic, nativeFunctionName != null);
                 }
 
-                context.NextFreeRegister -= args.Count;
-                if (!methodSymbol.IsStatic) context.NextFreeRegister--; // instanceReg
+                var info = new InvocationInfo(
+                    MethodSymbol: methodSymbol,
+                    InstanceExpression: invocation.Expression,
+                    Arguments: invocation.ArgumentList?.Arguments,
+                    IsDelegateInvoke: isDelegateInvoke,
+                    IsInterfaceCall: isInterfaceCall,
+                    IsVirtualCall: isVirtualCall,
+                    IsBaseCall: isBaseCall,
+                    NativeFunctionName: nativeFunctionName,
+                    TargetReg: targetReg
+                );
 
-                if (stackArgsCount > 0)
-                {
-                    context.Emit($"ADD SP, SP, #{stackArgsCount * 4}");
-                    uint imm12 = (uint)(stackArgsCount * 4);
-                    uint op = 0xF10D0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
-                    context.Write32(op);
-                }
-
-                if (targetReg != 0) EmitMovRegister(context, targetReg, 0);
+                EmitInvocation(context, info, tempOffset);
             }
         }
 
         
+        public abstract void EmitInvocation(MethodCompilationContext context, InvocationInfo info, int tempOffset);
+        public abstract void EmitObjectCreation(MethodCompilationContext context, ObjectCreationInfo info, int tempOffset);
+        public abstract void EmitArrayCreation(MethodCompilationContext context, ArrayCreationInfo info, int tempOffset);
+        //public abstract void EmitDelegateCreation(MethodCompilationContext context, IMethodSymbol targetMethod, ExpressionSyntax nodeExpr, ITypeSymbol delegateType, int targetReg, int tempOffset);
+
         public abstract void EmitCall(MethodCompilationContext context, string name, bool isStatic, bool isNative = false);
         public abstract void EmitMovImmediate(MethodCompilationContext context, int reg, int val);
         public abstract void EmitCompare(MethodCompilationContext context, int left, int right);
