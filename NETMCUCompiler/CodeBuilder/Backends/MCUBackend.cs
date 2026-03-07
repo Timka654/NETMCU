@@ -11,5 +11,9 @@ namespace NETMCUCompiler.CodeBuilder.Backends
 
         public abstract void GenerateMethodPrologue(MethodCompilationContext context, bool isInstance, ImmutableArray<IParameterSymbol> parameters);
         public abstract void GenerateMethodEpilogue(MethodCompilationContext context);
+
+        public abstract void GenerateIfStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateTrueBlock, Action generateFalseBlock);
+
+        public abstract void GenerateWhileStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateBody, Action<string, string> registerLoopContext, Action popLoopContext);
     }
 }

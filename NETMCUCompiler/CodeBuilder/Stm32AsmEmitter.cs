@@ -289,30 +289,10 @@ namespace NETMCUCompiler.CodeBuilder
 
         public override void VisitWhileStatement(WhileStatementSyntax node)
         {
-            // Генерируем уникальные метки для начала и конца цикла
-            string startLabel = context.NextLabel("WHILE_START");
-            string endLabel = context.NextLabel("WHILE_END");
-
-            _loopContexts.Push((endLabel, startLabel));
-
-            // Метка начала: сюда будем прыгать для каждой итерации
-            context.MarkLabel(startLabel);
-
-            // 1. Вычисляем условие. 
-            // Если оно ложно (false) — прыгаем сразу на выход (endLabel)
-            // Если истинно — просто идем дальше в тело цикла
-            ASMInstructions.EmitLogicalCondition(node.Condition, "", endLabel, context);
-
-            // 2. Тело цикла: рекурсивно посещаем все стейтменты внутри { }
-            Visit(node.Statement);
-
-            // 3. Прыжок обратно на проверку условия
-            ASMInstructions.EmitJump(startLabel, context);
-
-            // Метка выхода
-            context.MarkLabel(endLabel);
-
-            _loopContexts.Pop();
+            context.Class.Global.Backend.GenerateWhileStatement(context, node.Condition, 
+                generateBody: () => Visit(node.Statement),
+                registerLoopContext: (endLabel, startLabel) => _loopContexts.Push((endLabel, startLabel)),
+                popLoopContext: () => _loopContexts.Pop());
         }
 
         public override void VisitDoStatement(DoStatementSyntax node)
@@ -761,26 +741,9 @@ namespace NETMCUCompiler.CodeBuilder
 
         public override void VisitIfStatement(IfStatementSyntax node)
         {
-            string trueLabel = $"L_TRUE_{context.LabelCount++}";
-            string falseLabel = $"L_FALSE_{context.LabelCount++}";
-            string endLabel = $"L_END_{context.LabelCount++}";
-
-            // Разбираем цепочку условий
-            ASMInstructions.EmitLogicalCondition(node.Condition, trueLabel, falseLabel, context);
-
-            // Тело TRUE
-            context.MarkLabel(trueLabel);
-            Visit(node.Statement);
-            ASMInstructions.EmitJump(endLabel, context);
-
-            // Тело FALSE (или следующий Else If)
-            context.MarkLabel(falseLabel);
-            if (node.Else != null)
-            {
-                Visit(node.Else.Statement);
-            }
-
-            context.MarkLabel(endLabel);
+            context.Class.Global.Backend.GenerateIfStatement(context, node.Condition, 
+                generateTrueBlock: () => Visit(node.Statement),
+                generateFalseBlock: node.Else != null ? () => Visit(node.Else.Statement) : null);
         }
 
         public override void VisitInvocationExpression(InvocationExpressionSyntax node)
