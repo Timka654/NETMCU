@@ -19,5 +19,13 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         public abstract void GenerateDoStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateBody, Action<string, string> registerLoopContext, Action popLoopContext);
 
         public abstract void GenerateForStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateInit, Action generateBody, Action generateIncrementor, Action<string, string> registerLoopContext, Action popLoopContext);
+
+        public abstract void GenerateTryStatement(MethodCompilationContext context, Action generateTryBlock, Action<CatchClauseSyntax> generateCatchBlock, Action generateFinallyBlock, SyntaxList<CatchClauseSyntax> catches, FinallyClauseSyntax finallyClause);
+
+        public abstract void GenerateThrowStatement(MethodCompilationContext context, ExpressionSyntax expression);
+
+        public abstract void GenerateReturnStatement(MethodCompilationContext context, ExpressionSyntax expression);
+
+        public abstract void GenerateSwitchStatement(MethodCompilationContext context, ExpressionSyntax expression, SyntaxList<SwitchSectionSyntax> sections, Action<SwitchSectionSyntax> generateSectionBody, Action<string, string> registerLoopContext, Action popLoopContext);
     }
 }

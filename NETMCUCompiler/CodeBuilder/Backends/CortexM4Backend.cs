@@ -129,5 +129,149 @@ namespace NETMCUCompiler.CodeBuilder.Backends
 
             popLoopContext();
         }
+
+        public override void GenerateTryStatement(MethodCompilationContext context, Action generateTryBlock, Action<CatchClauseSyntax> generateCatchBlock, Action generateFinallyBlock, SyntaxList<CatchClauseSyntax> catches, FinallyClauseSyntax finallyClause)
+        {
+            context.Emit("@ TRY BLOCK START");
+
+            string catchLabel = context.NextLabel("CATCH_HANDLER");
+            string endLabel = context.NextLabel("TRY_END");
+
+            // Помещаем адрес обработчика в r0 и вызываем NETMCU_TryPush
+            context.Emit($"ADR.W r0, {catchLabel}");
+            context.AddLoadAddress(catchLabel);
+            context.Write32(0xF2AF0000); // Placeholder for ADR.W r0, label
+
+            ASMInstructions.EmitCall("NETMCU_TryPush", context, isStatic: true, isNative: true);
+
+            generateTryBlock();
+
+            // Если блок выполнился успешно без throw, снимаем обработчик
+            ASMInstructions.EmitCall("NETMCU_TryPop", context, isStatic: true, isNative: true);
+            context.Emit($"B {endLabel}");
+            context.AddJump(endLabel, false);
+            context.Write16(0xE000); // branch empty
+
+            // Сам функция-обработчик catch (вызывается из throw)
+            context.MarkLabel(catchLabel);
+
+            // Снимаем себя из стека обработчиков, чтобы следующий throw полетел выше
+            ASMInstructions.EmitCall("NETMCU_TryPop", context, isStatic: true, isNative: true); 
+
+            // Обрабатываем блоки catch
+            foreach (var catchClause in catches)
+            {
+                context.Emit($"@ CATCH BLOCK: {catchClause.Declaration?.Type?.ToString()}");
+                generateCatchBlock(catchClause);
+            }
+
+            // Возврат в throw! (как и просил пользователь, без сложной раскрутки)
+            context.Emit($"B {endLabel}");
+            context.AddJump(endLabel, false);
+            context.Write16(0xE000); // branch empty
+
+            context.MarkLabel(endLabel);
+
+            if (finallyClause != null)
+            {
+                context.Emit("@ FINALLY BLOCK");
+                generateFinallyBlock();
+            }
+
+            context.Emit("@ TRY BLOCK END");
+        }
+
+        public override void GenerateThrowStatement(MethodCompilationContext context, ExpressionSyntax expression)
+        {
+            context.Emit("@ THROW EXECUTION");
+            if (expression != null)
+            {
+                // Помещаем результат выражения сразу в r0 (первый аргумент для вызова)
+                ASMInstructions.EmitExpression(expression, 0, context);
+            }
+            else
+            {
+                context.Emit("mov r0, #0 @ Rethrow or null exception");
+                ASMInstructions.EmitMovImmediate(0, 0, context);
+            }
+
+            ASMInstructions.EmitCall("NETMCU_Throw", context, isStatic: true, isNative: true);
+        }
+
+        public override void GenerateReturnStatement(MethodCompilationContext context, ExpressionSyntax expression)
+        {
+            if (expression != null)
+            {
+                // Результат возврата должен лечь в R0
+                ASMInstructions.EmitExpression(expression, 0, context);
+            }
+
+            // Прыгаем в эпилог текущего метода (метода, который будет генерировать POP {pc})
+            string methodName = context.Name;
+            ASMInstructions.EmitJump($"{methodName}_exit", context);
+        }
+
+        public override void GenerateSwitchStatement(MethodCompilationContext context, ExpressionSyntax expression, SyntaxList<SwitchSectionSyntax> sections, Action<SwitchSectionSyntax> generateSectionBody, Action<string, string> registerLoopContext, Action popLoopContext)
+        {
+            int switchReg = context.NextFreeRegister++;
+            ASMInstructions.EmitExpression(expression, switchReg, context);
+
+            string endSwitchLabel = context.NextLabel("SWITCH_END");
+
+            // В C# break внутри switch должен выйти из switch.
+            registerLoopContext(endSwitchLabel, "ERROR_CONTINUE_IN_SWITCH");
+
+            int tmpReg = context.NextFreeRegister++;
+            string defaultLabel = null;
+
+            var sectionLabels = new Dictionary<SwitchSectionSyntax, string>();
+
+            // 1. Создаем метки для блоков и генерируем проверки кейсов
+            foreach (var section in sections)
+            {
+                string sectionLabel = context.NextLabel("SWITCH_SECTION");
+                sectionLabels[section] = sectionLabel;
+
+                foreach (var label in section.Labels)
+                {
+                    if (label is DefaultSwitchLabelSyntax)
+                    {
+                        defaultLabel = sectionLabel;
+                    }
+                    else if (label is CaseSwitchLabelSyntax caseLabel)
+                    {
+                        // Сравниваем
+                        ASMInstructions.EmitExpression(caseLabel.Value, tmpReg, context);
+                        ASMInstructions.EmitCompare(switchReg, tmpReg, context);
+                        ASMInstructions.EmitBranch(sectionLabel, "EQ", context);
+                    }
+                }
+            }
+
+            // 2. Если ни один не подошел, и есть default:
+            if (defaultLabel != null)
+            {
+                ASMInstructions.EmitJump(defaultLabel, context);
+            }
+            else
+            {
+                // Если нет default, прыгаем в конец
+                ASMInstructions.EmitJump(endSwitchLabel, context);
+            }
+
+            // 3. Вывод тел кейсов
+            foreach (var section in sections)
+            {
+                context.MarkLabel(sectionLabels[section]);
+                generateSectionBody(section);
+            }
+
+            // Конец
+            context.MarkLabel(endSwitchLabel);
+            popLoopContext();
+
+            // Освобождаем регистры
+            context.NextFreeRegister -= 2; 
+        }
     }
 }
