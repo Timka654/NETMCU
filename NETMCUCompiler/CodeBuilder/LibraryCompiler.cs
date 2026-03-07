@@ -293,14 +293,19 @@ namespace NETMCUCompiler.CodeBuilder
 
         private static void CompileMethod(MethodCompilationContext method)
         {
+            if (method.NativeName != null) return;
+
             var methodSyntax = method.MethodSyntax as MethodDeclarationSyntax;
             var localFuncSyntax = method.MethodSyntax as LocalFunctionStatementSyntax;
 
             var body = methodSyntax?.Body ?? localFuncSyntax?.Body;
             var expressionBody = methodSyntax?.ExpressionBody ?? localFuncSyntax?.ExpressionBody;
 
-            if (body == null && expressionBody == null) return;
-
+            if (body == null && expressionBody == null)
+            //if (body == null && expressionBody == null && !methodSyntax.AttributeLists.Any(x=>x.Attributes.Any(a => a.Name.ToString() == "NativeCall")))
+            {
+                return;
+            }
             var modifiers = methodSyntax?.Modifiers ?? localFuncSyntax?.Modifiers;
 
             // СБОР ЛОКАЛЬНЫХ КОНСТАНТ МЕТОДА (вторая часть BuildAsm)

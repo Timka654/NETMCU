@@ -3,6 +3,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System;
 using System.Collections.Concurrent;
+using System.Linq.Expressions;
 using System.Text;
 
 namespace NETMCUCompiler.CodeBuilder
@@ -17,6 +18,8 @@ namespace NETMCUCompiler.CodeBuilder
 
         public bool IsPublic { get; }
 
+        public string? NativeName { get; }
+
         public bool IgnoreMethodCompilation => ParentContext is TypeCompilationContext typeCompilation && typeCompilation.CompilerType;
 
         public MethodCompilationContext(SyntaxNode methodSyntax)
@@ -27,7 +30,16 @@ namespace NETMCUCompiler.CodeBuilder
             {
                 IsPublic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword));
                 IsStatic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
-
+                NativeName = methodDecl.AttributeLists
+                    .SelectMany(x => x.Attributes)
+                    .FirstOrDefault(x => x.Name.ToString() == "NativeCall")?
+                    .ArgumentList
+                    .Arguments
+                    .First()
+                    .Expression
+                    .GetText()
+                    .ToString()
+                    .Trim('"');
             }
         }
 
@@ -72,7 +84,7 @@ namespace NETMCUCompiler.CodeBuilder
 
         public void AddRelocation(string name, bool isStatic, bool isNative)
         {
-                Class.Global.AddRelocation(this, name, isStatic || isNative, isNative, (int)Bin.Position);
+            Class.Global.AddRelocation(this, name, isStatic || isNative, isNative, (int)Bin.Position);
         }
 
         //public void EmitLoadAddress(string register, string symbolName)

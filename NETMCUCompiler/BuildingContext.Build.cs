@@ -40,14 +40,14 @@ namespace NETMCUCompiler
             var methods = Methods;
             Console.WriteLine($"DumpLinker {Path} - Compiled = {!methods.Any(x => x.BinaryOffset == null)}");
 
-            if (methods.Any(x => x.BinaryOffset == null))
+            if (methods.Any(x => x.BinaryOffset == null && x.NativeName == null))
                 throw new Exception("Some methods have null BinaryOffset. First you must build image.");
 
             var meta = new
             {
                 OutputMethods = methods
                 .Where(x => x.IsPublic)
-                .ToDictionary(x => x.Name, x => new { x.BinaryOffset, x.IsStatic }),
+                .ToDictionary(x => x.Name, x => new { x.BinaryOffset, x.IsStatic, x.NativeName }),
                 OutputTypes = compilationContext.Childs
                 .OfType<TypeCompilationContext>()
                 .ToDictionary(
@@ -101,6 +101,8 @@ namespace NETMCUCompiler
             {
                 foreach (var method in methods.OfType<MethodCompilationContext>())
                 {
+                    //if (method.NativeName != null) continue;
+
                     method.BinaryOffset = (int)methodData.Position;
 
                     var oldPos = method.Bin.Position;
@@ -188,8 +190,6 @@ namespace NETMCUCompiler
                 return true;
             }
 
-            Console.WriteLine($"Compile {Path} ...");
-
             compilationContext = new CompilationContext()
             {
                 ParentContext = null,
@@ -209,6 +209,8 @@ namespace NETMCUCompiler
                     throw new Exception($"Failed to compile referenced project: {reference.Value.Path}");
                 compilationContext.FillConstants(reference.Value.compilationContext!.GetConstantMap());
             }
+
+            Console.WriteLine($"Compile {Path} ...");
 
             LibraryCompiler.CompileProject(Compilation, compilationContext);
 

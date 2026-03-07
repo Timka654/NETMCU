@@ -5,7 +5,7 @@ namespace System.Threading
 {
 
     [CompilerType]
-    internal class Thread
+    public class Thread
     {
         [NativeCall("NETMCU__Thread__Sleep")] 
         public static extern void Sleep(int ms);
