@@ -265,15 +265,10 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         {
             if (allocContext.IsStack)
             {
-                context.Emit($"@ Allocation: {allocContext.VarName} -> Stack[{allocContext.StackOffset}]");
                 if (allocContext.HasInitializer)
                 {
                     EmitMemoryAccess(context, false, allocContext.InitValueReg, 13, allocContext.StackOffset);
                 }
-            }
-            else
-            {
-                context.Emit($"@ Allocation: {allocContext.VarName} -> r{allocContext.RegisterIndex}");
             }
         }
 
@@ -323,8 +318,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             context.Bytecode(0xE0);
         }
 
-        public override void EmitExpressionValue(MethodCompilationContext context, ExpressionSyntax expr, int targetReg) => ASMInstructions.EmitExpression(expr, targetReg, context);
-
+        // Base class now handles EmitExpressionValue
         public override void EmitCall(MethodCompilationContext context, string name, bool isStatic, bool isNative = false)
         {
             context.Emit($"BL {name}");
@@ -527,6 +521,36 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         {
             context.Emit($"CMP r{reg}, #{imm}");
             context.Write16((ushort)(0x2800 | ((reg & 0x7) << 8) | (imm & 0xFF)));
+        }
+
+        public override void EmitLoadSymbolAddress(MethodCompilationContext context, int targetReg, string symbolName)
+        {
+            context.Emit($"LDR r{targetReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
+            context.Bytecode((byte)targetReg);
+            context.Bin.Write(new byte[7], 0, 7);
+        }
+
+        public override void EmitPush(MethodCompilationContext context, int reg)
+        {
+            context.Emit($"PUSH {{r{reg}}}");
+            context.Write16((ushort)(0xB400 | (1 << reg)));
+        }
+
+        public override void EmitAdjustSP(MethodCompilationContext context, int offset)
+        {
+            if (offset > 0)
+            {
+                context.Emit($"ADD SP, SP, #{offset}");
+                uint imm12 = (uint)offset;
+                uint op = 0xF10D0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
+                context.Write32(op);
+            }
+        }
+
+        public override void EmitCallRegister(MethodCompilationContext context, int reg)
+        {
+            context.Emit($"BLX r{reg}");
+            context.Write16((ushort)(0x4780 | (reg << 3)));
         }
     }
 }
