@@ -212,6 +212,7 @@ namespace NETMCUCompiler
 
             Console.WriteLine($"Compile {Path} ...");
 
+            Compilation = CodeBuilder.RecordExpander.Expand(Compilation);
             Compilation = CodeBuilder.AOTGenericExpander.Expand(Compilation);
 
             LibraryCompiler.CompileProject(Compilation, compilationContext);

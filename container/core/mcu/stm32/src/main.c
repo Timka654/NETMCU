@@ -99,7 +99,7 @@ __attribute__((used)) void* NETMCU__Memory__Alloc(uint32_t size) {
     }
     
     if (best_fit != NULL) {
-        best_fit->marked = 1;
+        best_fit->marked = 2; // Allocate as Black
         return (void*)((char*)best_fit + sizeof(GcBlock));
     }
 
@@ -114,24 +114,24 @@ __attribute__((used)) void* NETMCU__Memory__Alloc(uint32_t size) {
     if (_heap_ptr + total_size > stack_ptr - 1024) {
         // OOM! Trigger GC and try again
         NETMCU__Memory__Collect();
-        
+
         // Try again after GC
         curr = _gc_head;
         while (curr != NULL) {
             if (curr->marked == 0 && curr->size >= size) {
-                curr->marked = 1;
+                curr->marked = 2; // Allocate as Black
                 return (void*)((char*)curr + sizeof(GcBlock));
             }
             curr = curr->next;
         }
-        
+
         // Still OOM
         while(1) { } // Freeze
     }
 
     GcBlock* new_block = (GcBlock*)_heap_ptr;
     new_block->size = size;
-    new_block->marked = 1;
+    new_block->marked = 2; // Allocate as Black
     new_block->next = _gc_head;
     _gc_head = new_block;
 
@@ -152,14 +152,11 @@ static void mark_pointers_in_range(uint32_t* start, uint32_t* end) {
         uint32_t val = *p;
         // Check if val points to our heap
         if (val >= (uint32_t)&_ebss && val < (uint32_t)_heap_ptr) {
-            // Check if it matches exactly a block payload start
             GcBlock* curr = _gc_head;
             while (curr != NULL) {
                 uint32_t payload_addr = (uint32_t)((char*)curr + sizeof(GcBlock));
                 if (val == payload_addr && curr->marked == 0) {
-                    curr->marked = 1;
-                    // If it's an object with references inside, we should trace them recursively.
-                    // For now (conservative GC), we just mark it. Iterative tracing is left for future.
+                    curr->marked = 1; // Mark as Gray (found, but children not scanned)
                     break;
                 }
                 curr = curr->next;
@@ -168,9 +165,9 @@ static void mark_pointers_in_range(uint32_t* start, uint32_t* end) {
     }
 }
 
-// Заглушка для сборщика мусора
+// Полноценный консервативный сборщик мусора (Mark-and-Sweep с обходом графа)
 __attribute__((used)) void NETMCU__Memory__Collect() {
-    // 1. Unmark all
+    // 1. Unmark all (Reset to White)
     GcBlock* curr = _gc_head;
     while (curr != NULL) {
         curr->marked = 0;
@@ -181,18 +178,36 @@ __attribute__((used)) void NETMCU__Memory__Collect() {
     uint32_t* stack_ptr;
     __asm volatile ("mrs %0, msp" : "=r" (stack_ptr));
     uint32_t* stack_end = (uint32_t*)&_estack;
-    
-    // Safety check in case stack_ptr is weird
+
     if (stack_ptr < stack_end) {
         mark_pointers_in_range(stack_ptr, stack_end);
     }
 
     // 3. Mark roots from .data and .bss
-    extern uint32_t _sdata, _edata, _sbss; // _ebss already defined
+    extern uint32_t _sdata, _edata, _sbss; 
     mark_pointers_in_range(&_sdata, &_edata);
     mark_pointers_in_range(&_sbss, (uint32_t*)&_ebss);
-    
-    // 4. Sweep (unmarked stay 0, they will be reused in next Alloc)
+
+    // 4. Trace Iteratively (Gray to Black)
+    int changed;
+    do {
+        changed = 0;
+        curr = _gc_head;
+        while (curr != NULL) {
+            if (curr->marked == 1) { // If Gray
+                curr->marked = 2;    // Mark Black (fully processed)
+                uint32_t payload_addr = (uint32_t)((char*)curr + sizeof(GcBlock));
+                // Scan interior pointers inside this object payload
+                mark_pointers_in_range((uint32_t*)payload_addr, (uint32_t*)(payload_addr + curr->size));
+                changed = 1;
+            }
+            curr = curr->next;
+        }
+    } while (changed != 0);
+
+    // 5. Sweep implicitly:
+    // Memory blocks with marked == 0 are now free for reuse.
+    // Blocks with marked == 2 are active (Black).
 }
 
 // Поток / Время

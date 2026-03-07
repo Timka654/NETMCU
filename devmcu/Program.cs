@@ -46,7 +46,7 @@ namespace devmcu
             TestArrays();
             TestBoxingAndCasting();
             TestStrings();
-            // TestRecords(); // disabled temporarily until implicit constructors are supported
+            TestRecords();
             TestGC();
             TestTuples();
             TestGenerics();
@@ -68,12 +68,7 @@ namespace devmcu
             string s = strBox.GetValue();
         }
 
-        public class Point
-        {
-            public int X;
-            public int Y;
-            public Point(int x, int y) { X = x; Y = y; }
-        }
+        public record Point(int X, int Y);
 
         public static void TestGC()
         {
@@ -93,8 +88,8 @@ namespace devmcu
         {
             Point p1 = new Point(10, 20);
             Point p2 = new Point(10, 20);
-
-            // disabled record logic for now
+            Point p3 = p1 with { Y = 30 };
+            bool isEq = p1 == p2;
         }
 
         public static void TestStrings()

@@ -1427,14 +1427,31 @@ namespace NETMCUCompiler.CodeBuilder
                     argRegs.Add(safeReg);
                 }
 
+                // Push stack arguments (5th +) in reverse order AAPCS
+                int stackArgsCount = 0;
+                for (int i = args.Count - 1; i >= 0; i--)
+                {
+                    int targetArgReg = i + regOffset;
+                    if (targetArgReg > 3)
+                    {
+                        // Needs to go on stack
+                        context.Emit($"PUSH {{r{argRegs[i]}}} @ stack argument {i}");
+                        // T1 PUSH: 1011_0100_register_list -> 0xB400 | (1 << Reg)
+                        context.Write16((ushort)(0xB400 | (1 << argRegs[i])));
+                        stackArgsCount++;
+                    }
+                }
+
                 // Move evaluated arguments into AAPCS registers (R1-R3 for instance methods, R0-R3 for static)
                 for (int i = 0; i < args.Count; i++)
                 {
                     int targetArgReg = i + regOffset;
-                    if (targetArgReg > 3) throw new Exception("Поддерживается максимум 4 аргумента (включая this)");
-                    if (argRegs[i] != targetArgReg)
+                    if (targetArgReg <= 3)
                     {
-                        EmitMovRegister(targetArgReg, argRegs[i], context);
+                        if (argRegs[i] != targetArgReg)
+                        {
+                            EmitMovRegister(targetArgReg, argRegs[i], context);
+                        }
                     }
                 }
 
@@ -1488,6 +1505,16 @@ namespace NETMCUCompiler.CodeBuilder
                     EmitCall(callTarget, context, methodSymbol.IsStatic, nativeAttr != null);
                 }
 
+                // Если мы push'или аргументы, надо очистить их со стека
+                if (stackArgsCount > 0)
+                {
+                    context.Emit($"ADD SP, SP, #{stackArgsCount * 4} @ Cleanup stack arguments");
+                    uint imm12 = (uint)(stackArgsCount * 4);
+                    // ADD SP, SP, #imm (T3)
+                    uint op = 0xF10D0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
+                    context.Write32(op);
+                }
+
                 // Результат в R0 -> переносим по месту назначения
                 if (targetReg != 0)
                 {
@@ -1530,22 +1557,38 @@ namespace NETMCUCompiler.CodeBuilder
             for (int i = 0; i < parameters.Length; i++)
             {
                 int sourceReg = i + argOffset;
-                if (sourceReg > 3)
-                {
-                    // Аргументы, которые не поместились в r0-r3, приходят через стек.
-                    // Пока мы это не реализуем, но нужно иметь в виду.
-                    break;
-                }
-
+                int destReg = context.NextFreeRegister++;
+                string paramName = parameters[i].Name;
                 if (context.NextFreeRegister > 11)
                     throw new Exception("Недостаточно регистров для сохранения всех аргументов метода.");
 
-                int destReg = context.NextFreeRegister++;
-                string paramName = parameters[i].Name;
+                if (sourceReg <= 3)
+                {
+                    // Registers r0-r3
+                    EmitMovRegister(destReg, sourceReg, context);
+                    context.Emit($"@ Save parameter '{paramName}' from r{sourceReg} to r{destReg}");
+                }
+                else
+                {
+                    // Arguments 5+ are on the stack.
+                    // The stack layout looks like this at method start:
+                    // SP + 0: Pushed r4-r11, lr (which is 9 registers = 36 bytes)
+                    // SP + 36: Local Variables (StackSize)
+                    // SP + 36 + StackSize: Here is the 5th argument!
+                    // Wait, context.StackSize is already subtracted from SP.
+                    // The original SP before our prologue was higher.
+                    // So SP + context.StackSize + (9 * 4) + ((sourceReg - 4) * 4) is the address of the argument.
 
-                // Генерируем инструкцию MOV для сохранения
-                EmitMovRegister(destReg, sourceReg, context);
-                context.Emit($"@ Save parameter '{paramName}' from r{sourceReg} to r{destReg}");
+                    int stackArgsOffset = context.StackSize + (9 * 4) + ((sourceReg - 4) * 4);
+                    context.Emit($"LDR r{destReg}, [SP, #{stackArgsOffset}] @ Load stack parameter '{paramName}'");
+
+                    // LDR Rt, [SP, #imm]
+                    uint op = 0xF8D00000;
+                    op |= 13 << 16; // base = SP
+                    op |= ((uint)destReg & 0xF) << 12;
+                    op |= (uint)stackArgsOffset & 0xFFF;
+                    context.Write32(op);
+                }
 
                 // "Фиксируем" регистр за параметром
                 context.RegisterMap[paramName] = destReg;

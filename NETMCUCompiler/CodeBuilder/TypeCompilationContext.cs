@@ -33,12 +33,42 @@ namespace NETMCUCompiler.CodeBuilder
 
             foreach (var member in TypeSyntax.Members.OfType<FieldDeclarationSyntax>())
             {
+                var typeInfo = semanticModel.GetTypeInfo(member.Declaration.Type).Type;
+                int fieldSize = 4;
+                int align = 4;
+                if (typeInfo != null)
+                {
+                    if (typeInfo.SpecialType == SpecialType.System_Boolean || typeInfo.SpecialType == SpecialType.System_Byte || typeInfo.SpecialType == SpecialType.System_SByte)
+                    {
+                        fieldSize = 1; align = 1;
+                    }
+                    else if (typeInfo.SpecialType == SpecialType.System_Int16 || typeInfo.SpecialType == SpecialType.System_UInt16 || typeInfo.SpecialType == SpecialType.System_Char)
+                    {
+                        fieldSize = 2; align = 2;
+                    }
+                    else if (typeInfo.SpecialType == SpecialType.System_Int64 || typeInfo.SpecialType == SpecialType.System_UInt64 || typeInfo.SpecialType == SpecialType.System_Double)
+                    {
+                        fieldSize = 8; align = 8;
+                    }
+                    else if (typeInfo.TypeKind == TypeKind.Struct)
+                    {
+                        // Struct sizes should ideally be precomputed or recursive, for now use a naive sum if needed or just 4 as default
+                        // In real compiler we need to resolve it by getting the matching TypeCompilationContext Size
+                        // For safe fallback we keep 4, it should be updated but for simple types above this works
+                    }
+                }
+
                 foreach (var variable in member.Declaration.Variables)
                 {
+                    // Align offset
+                    currentOffset = (currentOffset + align - 1) & ~(align - 1);
                     fieldOffsets[variable.Identifier.Text] = currentOffset;
-                    currentOffset += 4; // Пока считаем всё по 4 байта (int, uint, ptr)
+                    currentOffset += fieldSize;
                 }
             }
+
+            // Align final size to 4 bytes
+            currentOffset = (currentOffset + 3) & ~3;
 
             FieldOffsets = fieldOffsets;
             Size = currentOffset;

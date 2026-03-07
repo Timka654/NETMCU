@@ -77,8 +77,12 @@ namespace NETMCUCompiler.CodeBuilder
                 foreach (var instance in uniqueInstances)
                 {
                     string cleanName = GetCleanName(instance);
+                    Console.WriteLine($"[DEBUG-GENERIC] Processing instance with cleanName: '{cleanName}', OriginalDef: '{originalDef}'");
                     if (!generatedNames.Add(cleanName))
+                    {
+                        Console.WriteLine($"[DEBUG-GENERIC] SKIPPED: '{cleanName}'");
                         continue;
+                    }
 
                     // Map type parameters to arguments
                     var typeMap = new Dictionary<string, ITypeSymbol>();
