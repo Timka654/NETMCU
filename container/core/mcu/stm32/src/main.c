@@ -3,6 +3,36 @@
 #include <sys/stat.h>
 #include <errno.h>
 
+// --- Runtime Exceptions ---
+#define EXCEPTION_STACK_SIZE 64
+static void* _ex_stack[EXCEPTION_STACK_SIZE];
+static int _ex_stack_ptr = 0;
+
+void NETMCU_TryPush(void* handler) {
+    if (_ex_stack_ptr < EXCEPTION_STACK_SIZE) {
+        _ex_stack[_ex_stack_ptr++] = handler;
+    }
+}
+
+void NETMCU_TryPop() {
+    if (_ex_stack_ptr > 0) {
+        _ex_stack_ptr--;
+    }
+}
+
+void NETMCU_Throw(void* exception_obj) {
+    if (_ex_stack_ptr > 0) {
+        // Берем верхний обработчик (catch) и вызываем его как функцию.
+        // Он может выбросить further_throw, поэтому мы просто вызываем.
+        void (*handler)(void*) = _ex_stack[_ex_stack_ptr - 1];
+        handler(exception_obj);
+    } else {
+        // Unhandled exception hang
+        while(1) { }
+    }
+}
+// --------------------------
+
 // Эти макросы придут из вашего C# через -D в MY_CFLAGS
 #ifndef USER_CODE_ADDR
     #error "USER_CODE_ADDR must be defined!"

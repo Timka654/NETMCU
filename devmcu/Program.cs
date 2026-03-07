@@ -28,6 +28,16 @@ namespace devmcu
             // 2. Настраиваем PC13 на выход
             GPIO.SetMode(GPIO_Port.PortC, LED_PIN, GPIO_Mode.OutputPushPull);
 
+            try
+            {
+
+            }
+            catch (System.Exception)
+            {
+
+                throw;
+            }
+
             while (true)
             {
                 // 3. Инвертируем состояние

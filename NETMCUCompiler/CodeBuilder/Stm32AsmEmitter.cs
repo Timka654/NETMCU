@@ -8,6 +8,8 @@ namespace NETMCUCompiler.CodeBuilder
 {
     public class Stm32MethodBuilder(MethodCompilationContext context) : CSharpSyntaxWalker
     {
+        private Stack<(string breakLabel, string continueLabel)> _loopContexts = new();
+
         //public void BuildAsm(MethodDeclarationSyntax tree)
         //{
         //    var classNode = tree.FirstAncestorOrSelf<ClassDeclarationSyntax>();
@@ -44,20 +46,18 @@ namespace NETMCUCompiler.CodeBuilder
 
         //    ASMInstructions.EmitFunctionFrame(tree, context, () => Visit(tree));
         //}
-        public override void VisitLocalDeclarationStatement(LocalDeclarationStatementSyntax node)
+        public void VisitVariableDeclaration(VariableDeclarationSyntax node)
         {
-            foreach (var variable in node.Declaration.Variables)
+            foreach (var variable in node.Variables)
             {
                 string varName = variable.Identifier.Text;
                 int currentReg;
-                // Если переменная уже была объявлена (например, в другом месте или мы перезаписываем)
                 if (context.RegisterMap.TryGetValue(varName, out int existingReg))
                 {
                     currentReg = existingReg;
                 }
                 else
                 {
-                    // Выделяем новый регистр
                     if (context.NextFreeRegister > 11) throw new Exception("Закончились регистры r4-r11");
                     currentReg = context.NextFreeRegister++;
                     context.RegisterMap[varName] = currentReg;
@@ -65,7 +65,6 @@ namespace NETMCUCompiler.CodeBuilder
 
                 context.Emit($"@ Allocation: {varName} -> r{currentReg}");
 
-                // Если есть значение (например, = 10 + a)
                 if (variable.Initializer != null)
                 {
                     ASMInstructions.EmitExpression(
@@ -77,14 +76,130 @@ namespace NETMCUCompiler.CodeBuilder
                 }
             }
         }
+
+        public override void VisitLocalDeclarationStatement(LocalDeclarationStatementSyntax node)
+        {
+            VisitVariableDeclaration(node.Declaration);
+        }
+        public override void VisitForStatement(ForStatementSyntax node)
+        {
+            // 1. Инициализация (может быть объявление переменной или просто присваивание)
+            if (node.Declaration != null)
+            {
+                VisitVariableDeclaration(node.Declaration);
+            }
+            foreach (var initializer in node.Initializers)
+            {
+                Visit(initializer);
+            }
+
+            string startLabel = context.NextLabel("FOR_START");
+            string endLabel = context.NextLabel("FOR_END");
+            string incLabel = context.NextLabel("FOR_INC"); // Для continue
+
+            _loopContexts.Push((endLabel, incLabel));
+
+            // Метка начала
+            context.Asm.AppendLine($"{startLabel}:");
+
+            // 2. Условие
+            if (node.Condition != null)
+            {
+                ASMInstructions.EmitLogicalCondition(node.Condition, "", endLabel, context);
+            }
+
+            // 3. Тело
+            Visit(node.Statement);
+
+            // Метка инкремента (сюда будет прыгать continue, если мы его реализуем)
+            context.Asm.AppendLine($"{incLabel}:");
+
+            // 4. Инкремент
+            foreach (var incrementor in node.Incrementors)
+            {
+                Visit(incrementor);
+            }
+
+            // 5. Прыжок на начало
+            ASMInstructions.EmitJump(startLabel, context);
+
+            // Метка выхода
+            context.Asm.AppendLine($"{endLabel}:");
+
+            _loopContexts.Pop();
+        }
+
+        public override void VisitTryStatement(TryStatementSyntax node)
+        {
+            context.Emit("@ TRY BLOCK START");
+
+            string catchLabel = context.NextLabel("CATCH_HANDLER");
+            string endLabel = context.NextLabel("TRY_END");
+
+            // Помещаем адрес обработчика в стек
+            context.Emit($"ldr r0, ={catchLabel}");
+            context.Emit("bl NETMCU_TryPush");
+
+            Visit(node.Block);
+
+            // Если блок выполнился успешно без throw, снимаем обработчик
+            context.Emit("bl NETMCU_TryPop");
+            context.Emit($"b {endLabel}");
+
+            // Сам функция-обработчик catch (вызывается из throw, не раскручивая стек локальных переменных)
+            context.Asm.AppendLine($"{catchLabel}:");
+            context.Emit("push {lr}");
+
+            // Снимаем себя из стека обработчиков, чтобы следующий throw полетел выше
+            context.Emit("bl NETMCU_TryPop"); 
+
+            // Обрабатываем блоки catch
+            foreach (var catchClause in node.Catches)
+            {
+                context.Emit($"@ CATCH BLOCK: {catchClause.Declaration?.Type?.ToString()}");
+                Visit(catchClause.Block);
+            }
+
+            // Возврат в throw! (как и просил пользователь, без сложной раскрутки)
+            context.Emit("pop {pc}");
+
+            context.Asm.AppendLine($"{endLabel}:");
+
+            if (node.Finally != null)
+            {
+                context.Emit("@ FINALLY BLOCK");
+                Visit(node.Finally.Block);
+            }
+
+            context.Emit("@ TRY BLOCK END");
+        }
+
+        public override void VisitThrowStatement(ThrowStatementSyntax node)
+        {
+            context.Emit("@ THROW EXECUTION");
+            if (node.Expression != null)
+            {
+                // Помещаем результат выражения сразу в r0 (первый аргумент для вызова)
+                ASMInstructions.EmitExpression(node.Expression, 0, context);
+            }
+            else
+            {
+                context.Emit("mov r0, #0 @ Rethrow or null exception");
+            }
+
+            context.Emit("bl NETMCU_Throw");
+        }
+
         public override void VisitWhileStatement(WhileStatementSyntax node)
         {
             // Генерируем уникальные метки для начала и конца цикла
             string startLabel = context.NextLabel("WHILE_START");
             string endLabel = context.NextLabel("WHILE_END");
 
+            _loopContexts.Push((endLabel, startLabel));
+
             // Метка начала: сюда будем прыгать для каждой итерации
-            context.Emit($"{startLabel}:");
+            context.Asm.AppendLine($"{startLabel}:");
 
             // 1. Вычисляем условие. 
             // Если оно ложно (false) — прыгаем сразу на выход (endLabel)
@@ -95,10 +210,125 @@ namespace NETMCUCompiler.CodeBuilder
             Visit(node.Statement);
 
             // 3. Прыжок обратно на проверку условия
-            context.Emit($"B {startLabel}");
+            ASMInstructions.EmitJump(startLabel, context);
 
             // Метка выхода
-            context.Emit($"{endLabel}:");
+            context.Asm.AppendLine($"{endLabel}:");
+
+            _loopContexts.Pop();
+        }
+
+        public override void VisitDoStatement(DoStatementSyntax node)
+        {
+            string startLabel = context.NextLabel("DO_START");
+            string endLabel = context.NextLabel("DO_END");
+            string condLabel = context.NextLabel("DO_COND"); // Для continue
+
+            _loopContexts.Push((endLabel, condLabel));
+
+            context.Asm.AppendLine($"{startLabel}:");
+
+            Visit(node.Statement);
+
+            context.Asm.AppendLine($"{condLabel}:");
+
+            // Проверяем условие. Если true -> прыгаем в начало (startLabel).
+            ASMInstructions.EmitLogicalCondition(node.Condition, startLabel, endLabel, context);
+
+            context.Asm.AppendLine($"{endLabel}:");
+
+            _loopContexts.Pop();
+        }
+
+        public override void VisitReturnStatement(ReturnStatementSyntax node)
+        {
+            if (node.Expression != null)
+            {
+                // Результат возврата должен лечь в R0
+                ASMInstructions.EmitExpression(node.Expression, 0, context);
+            }
+
+            // Прыгаем в эпилог текущего метода (метода, который будет генерировать POP {pc})
+            string methodName = context.Name;
+            ASMInstructions.EmitJump($"{methodName}_exit", context);
+        }
+
+        public override void VisitSwitchStatement(SwitchStatementSyntax node)
+        {
+            int switchReg = context.NextFreeRegister++;
+            ASMInstructions.EmitExpression(node.Expression, switchReg, context);
+
+            string endSwitchLabel = context.NextLabel("SWITCH_END");
+
+            // В C# break внутри switch должен выйти из switch.
+            _loopContexts.Push((endSwitchLabel, "ERROR_CONTINUE_IN_SWITCH"));
+
+            int tmpReg = context.NextFreeRegister++;
+            string defaultLabel = null;
+
+            var sectionLabels = new Dictionary<SwitchSectionSyntax, string>();
+
+            // 1. Создаем метки для блоков и генерируем проверки кейсов
+            foreach (var section in node.Sections)
+            {
+                string sectionLabel = context.NextLabel("SWITCH_SECTION");
+                sectionLabels[section] = sectionLabel;
+
+                foreach (var label in section.Labels)
+                {
+                    if (label is DefaultSwitchLabelSyntax)
+                    {
+                        defaultLabel = sectionLabel;
+                    }
+                    else if (label is CaseSwitchLabelSyntax caseLabel)
+                    {
+                        // Сравниваем
+                        ASMInstructions.EmitExpression(caseLabel.Value, tmpReg, context);
+                        ASMInstructions.EmitCompare(switchReg, tmpReg, context);
+                        ASMInstructions.EmitBranch(sectionLabel, "EQ", context);
+                    }
+                }
+            }
+
+            // 2. Если ни один не подошел, и есть default:
+            if (defaultLabel != null)
+            {
+                ASMInstructions.EmitJump(defaultLabel, context);
+            }
+            else
+            {
+                // Если нет default, прыгаем в конец
+                ASMInstructions.EmitJump(endSwitchLabel, context);
+            }
+
+            // 3. Вывод тел кейсов
+            foreach (var section in node.Sections)
+            {
+                context.Asm.AppendLine($"{sectionLabels[section]}:");
+                foreach (var statement in section.Statements)
+                {
+                    Visit(statement);
+                }
+            }
+
+            // Конец
+            context.Asm.AppendLine($"{endSwitchLabel}:");
+            _loopContexts.Pop();
+
+            // Освобождаем регистры
+            context.NextFreeRegister -= 2; 
+        }
+
+        public override void VisitBreakStatement(BreakStatementSyntax node)
+        {
+            if (_loopContexts.Count == 0) throw new Exception("Оператор break вне цикла");
+            ASMInstructions.EmitJump(_loopContexts.Peek().breakLabel, context);
+        }
+
+        public override void VisitContinueStatement(ContinueStatementSyntax node)
+        {
+            if (_loopContexts.Count == 0) throw new Exception("Оператор continue вне цикла");
+            ASMInstructions.EmitJump(_loopContexts.Peek().continueLabel, context);
         }
         public override void VisitExpressionStatement(ExpressionStatementSyntax node)
         {

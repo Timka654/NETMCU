@@ -40,6 +40,7 @@ namespace NETMCUCompiler
                 Console.WriteLine("Compile failed");
                 return;
             }
+            Console.WriteLine("Compile succeeded");
         }
     }
 
