@@ -10,42 +10,6 @@ namespace NETMCUCompiler.CodeBuilder
     {
         private Stack<(string breakLabel, string continueLabel)> _loopContexts = new();
 
-        //public void BuildAsm(MethodDeclarationSyntax tree)
-        //{
-        //    var classNode = tree.FirstAncestorOrSelf<ClassDeclarationSyntax>();
-        //    if (classNode != null)
-        //    {
-        //        foreach (var member in classNode.Members)
-        //        {
-        //            if (member is FieldDeclarationSyntax field && field.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword)))
-        //            {
-        //                foreach (var variable in field.Declaration.Variables)
-        //                {
-        //                    if (variable.Initializer?.Value is LiteralExpressionSyntax literal)
-        //                    {
-        //                        int val = ASMInstructions.ParseLiteral(literal);
-        //                        string name = variable.Identifier.Text;
-        //                        context.ConstantMap[name] = val; // Просто d2
-        //                        context.ConstantMap[$"{classNode.Identifier.Text}.{name}"] = val; // Program.d2
-        //                    }
-        //                }
-        //            }
-        //        }
-        //    }
-
-        //    // Сканируем константы внутри метода (например, d2)
-        //    foreach (var localConst in tree.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
-        //                .Where(s => s.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword))))
-        //    {
-        //        foreach (var v in localConst.Declaration.Variables)
-        //        {
-        //            if (v.Initializer?.Value is LiteralExpressionSyntax lit)
-        //                context.ConstantMap[v.Identifier.Text] = ASMInstructions.ParseLiteral(lit);
-        //        }
-        //    }
-
-        //    ASMInstructions.EmitFunctionFrame(tree, context, () => Visit(tree));
-        //}
         public void VisitVariableDeclaration(VariableDeclarationSyntax node)
         {
             foreach (var variable in node.Variables)
@@ -177,7 +141,8 @@ namespace NETMCUCompiler.CodeBuilder
 
                 int lenAddrReg = context.NextFreeRegister++;
                 ASMInstructions.EmitArithmeticOp(SyntaxKind.SubtractExpression, lenAddrReg, collectionReg, fourReg, context);
-                context.Emit($"LDR r{lengthReg}, [r{lenAddrReg}, #0] @ Read array length");
+                context.Emit($"@ Read array length");
+                ASMInstructions.EmitMemoryAccess(true, lengthReg, lenAddrReg, 0, context);
                 context.NextFreeRegister -= 2;
 
                 context.MarkLabel(startLabel);
@@ -195,7 +160,7 @@ namespace NETMCUCompiler.CodeBuilder
                 ASMInstructions.EmitMovRegister(targetAddrReg, collectionReg, context);
                 ASMInstructions.EmitArithmeticOp(SyntaxKind.AddExpression, targetAddrReg, targetAddrReg, offsetReg, context);
 
-                context.Emit($"LDR r{itemReg}, [r{targetAddrReg}, #0]");
+                ASMInstructions.EmitMemoryAccess(true, itemReg, targetAddrReg, 0, context);
                 context.NextFreeRegister -= 3;
             }
             else
@@ -474,81 +439,16 @@ namespace NETMCUCompiler.CodeBuilder
 
         public override void VisitExpressionStatement(ExpressionStatementSyntax node)
         {
-            //if (node.Expression is AssignmentExpressionSyntax assignment)
-            //{
-            //    int targetReg = context.GetVarRegister(assignment.Left.ToString());
-
-            //    if (assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
-            //    {
-            //        // Обычное a = 1;
-            //        ASMInstructions.EmitExpression(assignment.Right, targetReg, context);
-            //    }
-            //    else
-            //    {
-            //        // Составное присваивание: +=, -=, *=, /=
-            //        // 1. Определяем, какая мат. операция скрыта за знаком
-            //        SyntaxKind opKind = assignment.Kind() switch
-            //        {
-            //            SyntaxKind.AddAssignmentExpression => SyntaxKind.AddExpression,
-            //            SyntaxKind.SubtractAssignmentExpression => SyntaxKind.SubtractExpression,
-            //            SyntaxKind.MultiplyAssignmentExpression => SyntaxKind.MultiplyExpression,
-            //            SyntaxKind.DivideAssignmentExpression => SyntaxKind.DivideExpression,
-            //            _ => SyntaxKind.None
-            //        };
-
-            //        if (opKind != SyntaxKind.None)
-            //        {
-            //            // 2. Вычисляем правую часть во временный регистр r0
-            //            ASMInstructions.EmitExpression(assignment.Right, 0, context);
-
-            //            // 3. Выполняем операцию: target = target (op) r0
-            //            // Например: r4 = r4 + r0
-            //            ASMInstructions.EmitArithmeticOp(opKind, targetReg, targetReg, 0, context);
-            //        }
-            //    }
-            //}
-            // Про Test() и IF мы поговорим в следующих шагах (Шаг 4 и 5)
             base.VisitExpressionStatement(node);
         }
         public override void VisitLiteralExpression(LiteralExpressionSyntax node)
         {
-            int val = ASMInstructions.ParseLiteral(node, context);
-            int reg = context.NextFreeRegister++; // Или твоя логика выделения
-            context.Emit($"MOVS R{reg}, #{val}");
-            context.LastUsedRegister = reg;
-        }
-        public void EmitLoadStringAddress(string register, string symbolName)
-        {
-            // Предполагаем, что регистр всегда r0 для простоты
-            //if (register != "r0")
-            //{
-            //    throw new NotSupportedException("Загрузка адресов строк поддерживается только для регистра r0.");
-            //}
-
-            // Добавляем запись о релокации данных.
-            // Линкер позже запишет сюда абсолютный адрес символа.
-            context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
-
-            // Генерируем ассемблерный плейсхолдер и резервируем 8 байт
-            // для пары инструкций MOVW/MOVT.
-            context.Emit($"LDR {register}, ={symbolName} ; (placeholder for MOVW/MOVT)");
-            context.Bin.Write(new byte[8], 0, 8);
+            ASMInstructions.EmitExpression(node, 0, context);
         }
 
         public override void VisitIdentifierName(IdentifierNameSyntax node)
         {
-            string name = node.Identifier.Text;
-            if (context.RegisterMap.TryGetValue(name, out int reg))
-            {
-                context.LastUsedRegister = reg;
-            }
-            // Если переменная на стеке, нам нужно загрузить её в регистр для вычислений
-            else if (context.StackMap.TryGetValue(name, out var stackVar))
-            {
-                int r = context.NextFreeRegister++;
-                context.Emit($"LDR R{r}, [SP, #{stackVar.StackOffset}]");
-                context.LastUsedRegister = r;
-            }
+            ASMInstructions.EmitExpression(node, 0, context);
         }
 
         private void HandleStructAssignment(AssignmentExpressionSyntax node, MemberAccessExpressionSyntax memberAccess, int srcReg)
@@ -559,32 +459,73 @@ namespace NETMCUCompiler.CodeBuilder
                 string fieldName = fieldSymbol.Name;
                 string typeName = fieldSymbol.ContainingType.ToDisplayString();
 
+                int fieldOffset = -1;
+
                 if (context.Class.Global.Childs.TryGetValue(typeName, out var typeCtx) && typeCtx is TypeCompilationContext tcc)
                 {
-                    if (tcc.FieldOffsets.TryGetValue(fieldName, out int fieldOffset))
+                    if (tcc.FieldOffsets.TryGetValue(fieldName, out int offset))
                     {
-                        string structName = memberAccess.Expression.ToString();
-                        
-                        if (context.StackMap.TryGetValue(structName, out var stackVar))
-                        {
-                            ASMInstructions.EmitMemoryAccess(false, srcReg, 13, stackVar.StackOffset + fieldOffset, context);
-                        }
-                        else
-                        {
-                            int baseReg = context.NextFreeRegister++;
-                            ASMInstructions.EmitExpression(memberAccess.Expression, baseReg, context, 0);
-                            ASMInstructions.EmitMemoryAccess(false, srcReg, baseReg, fieldOffset, context);
-                            context.NextFreeRegister--;
-                        }
-                    }
-                    else
-                    {
-                        context.Emit($"@ Field {fieldName} not found in offsets for {typeName}");
+                        fieldOffset = offset;
                     }
                 }
                 else
                 {
-                    context.Emit($"@ Type {typeName} metadata not found for field {fieldName}");
+                    // Fallback for external types
+                    int currentOffset = fieldSymbol.ContainingType.IsReferenceType && context.Class.Global.BuildingContext.Options?.TypeHeader == true ? 4 : 0;
+                    foreach (var f in fieldSymbol.ContainingType.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic))
+                    {
+                        var typeInfo = f.Type;
+                        int fieldSize = 4;
+                        int align = 4;
+                        if (typeInfo != null)
+                        {
+                            if (typeInfo.SpecialType == SpecialType.System_Boolean || typeInfo.SpecialType == SpecialType.System_Byte || typeInfo.SpecialType == SpecialType.System_SByte)
+                            {
+                                fieldSize = 1; align = 1;
+                            }
+                            else if (typeInfo.SpecialType == SpecialType.System_Int16 || typeInfo.SpecialType == SpecialType.System_UInt16 || typeInfo.SpecialType == SpecialType.System_Char)
+                            {
+                                fieldSize = 2; align = 2;
+                            }
+                            else if (typeInfo.SpecialType == SpecialType.System_Int64 || typeInfo.SpecialType == SpecialType.System_UInt64 || typeInfo.SpecialType == SpecialType.System_Double)
+                            {
+                                fieldSize = 8; align = 8;
+                            }
+                            else if (typeInfo.TypeKind == TypeKind.Struct)
+                            {
+                                fieldSize = System.Math.Max(1, typeInfo.GetMembers().OfType<IFieldSymbol>().Where(m => !m.IsStatic).Count() * 4); // basic struct size estimation
+                            }
+                        }
+
+                        currentOffset = (currentOffset + align - 1) & ~(align - 1);
+                        if (f.Name == fieldName)
+                        {
+                            fieldOffset = currentOffset;
+                            break;
+                        }
+                        currentOffset += fieldSize;
+                    }
+                }
+
+                if (fieldOffset >= 0)
+                {
+                    string structName = memberAccess.Expression.ToString();
+
+                    if (context.StackMap.TryGetValue(structName, out var stackVar))
+                    {
+                        ASMInstructions.EmitMemoryAccess(false, srcReg, 13, stackVar.StackOffset + fieldOffset, context);
+                    }
+                    else
+                    {
+                        int baseReg = context.NextFreeRegister++;
+                        ASMInstructions.EmitExpression(memberAccess.Expression, baseReg, context, 0);
+                        ASMInstructions.EmitMemoryAccess(false, srcReg, baseReg, fieldOffset, context);
+                        context.NextFreeRegister--;
+                    }
+                }
+                else
+                {
+                    throw new Exception($"Field {fieldName} offset could not be calculated for type {typeName}");
                 }
             }
         }
@@ -762,7 +703,6 @@ namespace NETMCUCompiler.CodeBuilder
                     // Значение кладем в R1 (или R0, если статическое)
                     if (standardValueReg != regOffset)
                     {
-                        context.Emit($"MOV r{regOffset}, r{standardValueReg}");
                         ASMInstructions.EmitMovRegister(regOffset, standardValueReg, context);
                     }
 
@@ -842,11 +782,6 @@ namespace NETMCUCompiler.CodeBuilder
 
             context.MarkLabel(endLabel);
         }
-        //public override void VisitClassDeclaration(ClassDeclarationSyntax node)
-        //{
-        //    if (context.ExceptTypes.Contains(node)) return;
-        //    base.VisitClassDeclaration(node);
-        //}
 
         public override void VisitInvocationExpression(InvocationExpressionSyntax node)
         {
