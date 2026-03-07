@@ -103,6 +103,7 @@ namespace NETMCUCompiler.CodeBuilder
                 var methods = rootDesc.OfType<MethodDeclarationSyntax>()
                 .Cast<SyntaxNode>()
                 .Concat(rootDesc.OfType<LocalFunctionStatementSyntax>())
+                .Concat(rootDesc.OfType<ConstructorDeclarationSyntax>())
                 .Where(method =>
                 {
                     var containingMethod = method.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault();

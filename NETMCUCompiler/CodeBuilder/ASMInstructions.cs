@@ -465,7 +465,7 @@ namespace NETMCUCompiler.CodeBuilder
 
                 // Call constructor if present
                 var ctorSymbol = context.SemanticModel.GetSymbolInfo(objectCreation).Symbol as IMethodSymbol;
-                if (ctorSymbol != null && objectCreation.ArgumentList != null)
+                if (ctorSymbol != null && !ctorSymbol.IsImplicitlyDeclared && objectCreation.ArgumentList != null)
                 {
                     var args = objectCreation.ArgumentList.Arguments;
 

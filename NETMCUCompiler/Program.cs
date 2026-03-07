@@ -17,6 +17,10 @@ namespace NETMCUCompiler
         static async Task Main(string[] args)
         {
             var projectPath = Path.GetFullPath("../../../../devmcu/devmcu.csproj"); // temp
+            if (!File.Exists(projectPath))
+                projectPath = Path.GetFullPath("../devmcu/devmcu.csproj");
+            if (!File.Exists(projectPath))
+                projectPath = Path.GetFullPath("devmcu/devmcu.csproj");
 
             // 1. Инициализация MSBuild (нужно вызвать один раз при старте)
             if (!MSBuildLocator.IsRegistered)

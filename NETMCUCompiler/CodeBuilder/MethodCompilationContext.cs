@@ -26,16 +26,16 @@ namespace NETMCUCompiler.CodeBuilder
         {
             MethodSyntax = methodSyntax;
 
-            if (MethodSyntax is MethodDeclarationSyntax methodDecl)
+            if (MethodSyntax is BaseMethodDeclarationSyntax methodDecl)
             {
                 IsPublic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword));
                 IsStatic = methodDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
                 NativeName = methodDecl.AttributeLists
                     .SelectMany(x => x.Attributes)
                     .FirstOrDefault(x => x.Name.ToString() == "NativeCall")?
-                    .ArgumentList
+                    .ArgumentList?
                     .Arguments
-                    .First()
+                    .FirstOrDefault()?
                     .Expression
                     .GetText()
                     .ToString()
