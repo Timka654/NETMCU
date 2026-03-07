@@ -132,7 +132,7 @@ namespace NETMCUCompiler
 
             var refMethods = referenceContexts
                 .SelectMany(x => x.Value.PublicMethods)
-                .Concat(Methods.Where(x => !x.IsPublic))
+                .Concat(Methods)
                 .ToDictionary(x => x.Name, x => x);
 
             var relocs = compilationContext.ReferenceRelocations;

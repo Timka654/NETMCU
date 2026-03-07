@@ -725,59 +725,6 @@ namespace NETMCUCompiler.CodeBuilder
         //    base.VisitClassDeclaration(node);
         //}
 
-        //private void ProcessCondition(ExpressionSyntax condition, string failedLabel)
-        //{
-        //    if (condition is BinaryExpressionSyntax bin)
-        //    {
-        //        // Если это логическое ИЛИ (||)
-        //        if (bin.IsKind(SyntaxKind.LogicalOrExpression))
-        //        {
-        //            string trueLabel = $"L_CONDITION_TRUE_{context.LabelCount++}";
-        //            // Если левая часть верна -> прыгаем в тело (trueLabel)
-        //            // Здесь нужна инверсия инверсии, но для простоты:
-        //            ProcessSubCondition(bin.Left, trueLabel, isOr: true);
-        //            // Если нет -> проверяем правую часть
-        //            ProcessSubCondition(bin.Right, failedLabel, isOr: false);
-        //            context.Asm.AppendLine($"{trueLabel}:");
-        //        }
-        //        else
-        //        {
-        //            // Обычное одиночное сравнение
-        //            ProcessSubCondition(condition, failedLabel, isOr: false);
-        //        }
-        //    }
-        //}
-
-        private void ProcessSubCondition(ExpressionSyntax expr, string label, bool isOr)
-        {
-            if (expr is BinaryExpressionSyntax bin)
-            {
-                // Извлекаем чистую переменную и значение
-                int leftReg = context.GetVarRegister(bin.Left.ToString().Trim());
-                int rightVal = int.Parse(bin.Right.ToString().Trim());
-
-                ASMInstructions.EmitCompareImmediate(leftReg, rightVal, context);
-
-                if (isOr)
-                {
-                    // Для OR: если условие ВЕРНО -> прыгаем в тело
-                    string jmp = bin.Kind() switch
-                    {
-                        SyntaxKind.EqualsExpression => "BEQ",
-                        SyntaxKind.GreaterThanExpression => "BGT",
-                        _ => "BEQ"
-                    };
-                    context.Asm.AppendLine($"    {jmp} {label}");
-                    context.Bytecode(0x00); context.Bytecode(0xD0);
-                }
-                else
-                {
-                    // Для обычного IF/AND: если НЕВЕРНО -> прыгаем в ELSE
-                    ASMInstructions.EmitConditionalBranch(bin.Kind(), label, context);
-                }
-            }
-        }
-
         public override void VisitInvocationExpression(InvocationExpressionSyntax node)
         {
             // Метод может не возвращать значение, или мы игнорируем его

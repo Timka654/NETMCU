@@ -223,66 +223,44 @@ namespace NETMCUCompiler.CodeBuilder
         {
             if (condition is ParenthesizedExpressionSyntax paren)
             {
-                // Просто "ныряем" внутрь скобок, не меняя логику меток
                 EmitLogicalCondition(paren.Expression, trueLabel, falseLabel, context);
                 return;
             }
 
             if (condition is BinaryExpressionSyntax bin)
             {
-                // Если это || (OR)
                 if (bin.IsKind(SyntaxKind.LogicalOrExpression))
                 {
-                    // Если левая часть истинна — сразу прыгаем в тело (True)
                     EmitLogicalCondition(bin.Left, trueLabel, "", context);
-                    // Если нет — проверяем правую часть
                     EmitLogicalCondition(bin.Right, trueLabel, falseLabel, context);
                     return;
                 }
-                // Если это && (AND)
                 if (bin.IsKind(SyntaxKind.LogicalAndExpression))
                 {
                     string nextAnd = $"L_AND_{context.LabelCount++}";
-                    // Если левая часть ложна — прыгаем в конец (False)
                     EmitLogicalCondition(bin.Left, nextAnd, falseLabel, context);
                     context.Asm.AppendLine($"{nextAnd}:");
-                    // Проверяем правую часть
                     EmitLogicalCondition(bin.Right, trueLabel, falseLabel, context);
                     return;
                 }
 
-
-                int rightVal = 0;
-                string rightStr = bin.Right.ToString().Trim();
-
-                // 1. Пытаемся понять, что справа: число или константа/enum
-                if (bin.Right is LiteralExpressionSyntax literal)
+                if (bin.IsKind(SyntaxKind.EqualsExpression) || bin.IsKind(SyntaxKind.NotEqualsExpression) ||
+                    bin.IsKind(SyntaxKind.GreaterThanExpression) || bin.IsKind(SyntaxKind.LessThanExpression) ||
+                    bin.IsKind(SyntaxKind.GreaterThanOrEqualExpression) || bin.IsKind(SyntaxKind.LessThanOrEqualExpression))
                 {
-                    rightVal = ASMInstructions.ParseLiteral(literal, context);
-                }
-                else if (context.TryGetConstant(bin.Right, out var constVal))
-                {
-                    rightVal = (int)Convert.ToInt32(constVal);
-                }
-                else if (!int.TryParse(rightStr, out rightVal))
-                {
-                    // Если это не число и не константа, возможно это переменная?
-                    // Тогда нужно генерировать CMP R, R, но пока просто кинем ошибку
-                    throw new Exception($"Не удалось разрешить значение правой части: {rightStr}");
-                }
+                    int startReg = context.NextFreeRegister;
+                    int leftReg = context.NextFreeRegister++;
+                    EmitExpression(bin.Left, leftReg, context);
 
-                // Базовое сравнение (a == 11)
-                var leftId = bin.Left as IdentifierNameSyntax;
-                if (leftId != null)
-                {
-                    int leftReg = context.GetVarRegister(leftId.Identifier.Text);
+                    int rightReg = context.NextFreeRegister++;
+                    EmitExpression(bin.Right, rightReg, context);
 
-                    EmitCompareImmediate(leftReg, rightVal, context);
+                    EmitCompare(leftReg, rightReg, context);
 
-                    // Генерируем прыжок
                     string op = bin.Kind() switch
                     {
                         SyntaxKind.EqualsExpression => "EQ",
+                        SyntaxKind.NotEqualsExpression => "NE",
                         SyntaxKind.GreaterThanExpression => "GT",
                         SyntaxKind.LessThanExpression => "LT",
                         SyntaxKind.GreaterThanOrEqualExpression => "GE",
@@ -295,42 +273,74 @@ namespace NETMCUCompiler.CodeBuilder
 
                     if (!string.IsNullOrEmpty(falseLabel))
                     {
-                        // Инвертируем для прыжка по лжи
-                        string invOp = op switch { "EQ" => "NE", "GT" => "LE", "LT" => "GE", "GE" => "LT", "LE" => "GT", _ => "NE" };
+                        string invOp = op switch { "EQ" => "NE", "NE" => "EQ", "GT" => "LE", "LT" => "GE", "GE" => "LT", "LE" => "GT", _ => "NE" };
                         EmitBranch(falseLabel, invOp, context);
                     }
-                }
-            }
 
-            // ФИКС: Обработка одиночной переменной типа if (b)
-            if (condition is IdentifierNameSyntax id)
-            {
-                int reg = context.GetVarRegister(id.Identifier.Text);
-                EmitCompareImmediate(reg, 0, context);
-                // Если не 0 (true) -> идем в TrueLabel, иначе в FalseLabel
-                EmitBranch(trueLabel, "NE", context);
-                if (!string.IsNullOrEmpty(falseLabel))
-                    EmitBranch(falseLabel, "EQ", context);
-                return;
-            }
-
-            // ФИКС: Обработка отрицания типа if (!b)
-            if (condition is PrefixUnaryExpressionSyntax unary && unary.IsKind(SyntaxKind.LogicalNotExpression))
-            {
-                if (unary.Operand is IdentifierNameSyntax innerId)
-                {
-                    int reg = context.GetVarRegister(innerId.Identifier.Text);
-                    EmitCompareImmediate(reg, 0, context);
-                    // Если 0 (false) -> значит !b это true, прыгаем в TrueLabel
-                    EmitBranch(trueLabel, "EQ", context);
-                    if (!string.IsNullOrEmpty(falseLabel))
-                        EmitBranch(falseLabel, "NE", context);
+                    context.NextFreeRegister = startReg;
                     return;
                 }
             }
+
+            if (condition is PrefixUnaryExpressionSyntax unary && unary.IsKind(SyntaxKind.LogicalNotExpression))
+            {
+                int startReg = context.NextFreeRegister;
+                int reg = context.NextFreeRegister++;
+                EmitExpression(unary.Operand, reg, context);
+                EmitCompareImmediate(reg, 0, context);
+
+                if (!string.IsNullOrEmpty(trueLabel))
+                    EmitBranch(trueLabel, "EQ", context);
+                if (!string.IsNullOrEmpty(falseLabel))
+                    EmitBranch(falseLabel, "NE", context);
+
+                context.NextFreeRegister = startReg;
+                return;
+            }
+
+            // Fallback: evaluate anything as boolean expression directly
+            int condStartReg = context.NextFreeRegister;
+            int condReg = context.NextFreeRegister++;
+            EmitExpression(condition, condReg, context);
+            EmitCompareImmediate(condReg, 0, context);
+
+            if (!string.IsNullOrEmpty(trueLabel))
+                EmitBranch(trueLabel, "NE", context);
+            if (!string.IsNullOrEmpty(falseLabel))
+                EmitBranch(falseLabel, "EQ", context);
+
+            context.NextFreeRegister = condStartReg;
         }
         public static void EmitExpression(ExpressionSyntax expr, int targetReg, MethodCompilationContext context, int tempOffset = 0)
         {
+            var constOpt = context.SemanticModel.GetConstantValue(expr);
+            if (constOpt.HasValue)
+            {
+                if (constOpt.Value == null)
+                {
+                    EmitMovImmediate(targetReg, 0, context);
+                    return;
+                }
+                else if (constOpt.Value is string stringValue)
+                {
+                    var stringSymbol = context.Class.Global.RegisterStringLiteral(stringValue);
+                    context.AddDataRelocation(stringSymbol);
+                    context.Emit($"LDR r{targetReg}, ={stringSymbol} ; (placeholder for MOVW/MOVT)");
+                    context.Bin.Write(new byte[8], 0, 8);
+                    return;
+                }
+                else
+                {
+                    try
+                    {
+                        int val = Convert.ToInt32(constOpt.Value);
+                        EmitMovImmediate(targetReg, val, context);
+                        return;
+                    }
+                    catch { /* fallback if not an integer */ }
+                }
+            }
+
             if (expr is LiteralExpressionSyntax literal)
             {
                 if (literal.IsKind(SyntaxKind.StringLiteralExpression))
@@ -372,8 +382,35 @@ namespace NETMCUCompiler.CodeBuilder
             }
             else if (expr is BinaryExpressionSyntax binary)
             {
-                // ТЕПЕРЬ МЫ ЗАКРЫВАЕМ ЭТО:
-                EmitArithmetic(binary, targetReg, context, tempOffset);
+                if (binary.IsKind(SyntaxKind.LogicalAndExpression) ||
+                    binary.IsKind(SyntaxKind.LogicalOrExpression) ||
+                    binary.IsKind(SyntaxKind.EqualsExpression) ||
+                    binary.IsKind(SyntaxKind.NotEqualsExpression) ||
+                    binary.IsKind(SyntaxKind.GreaterThanExpression) ||
+                    binary.IsKind(SyntaxKind.LessThanExpression) ||
+                    binary.IsKind(SyntaxKind.GreaterThanOrEqualExpression) ||
+                    binary.IsKind(SyntaxKind.LessThanOrEqualExpression))
+                {
+                    string trueLabel = context.NextLabel("BOOL_TRUE");
+                    string falseLabel = context.NextLabel("BOOL_FALSE");
+                    string endLabel = context.NextLabel("BOOL_END");
+
+                    EmitLogicalCondition(binary, trueLabel, falseLabel, context);
+
+                    context.Emit($"{trueLabel}:");
+                    EmitMovImmediate(targetReg, 1, context);
+                    EmitJump(endLabel, context);
+
+                    context.Emit($"{falseLabel}:");
+                    EmitMovImmediate(targetReg, 0, context);
+
+                    context.Emit($"{endLabel}:");
+                }
+                else
+                {
+                    // ТЕПЕРЬ МЫ ЗАКРЫВАЕМ ЭТО:
+                    EmitArithmetic(binary, targetReg, context, tempOffset);
+                }
             }
             else if (expr is PrefixUnaryExpressionSyntax prefix)
             {
@@ -381,7 +418,11 @@ namespace NETMCUCompiler.CodeBuilder
                 {
                     EmitExpression(prefix.Operand, targetReg, context, tempOffset);
                     context.Emit($"RSBS r{targetReg}, r{targetReg}, #0");
-                    context.Write16((ushort)(0x4240 | ((targetReg & 0x7) << 3) | (targetReg & 0x7))); // RSBS Rd, Rn, #0 is encoded via RSBS which actually is RSB Rd, Rn, #0 => 0x4240 + Rn + Rd
+                    context.Write16((ushort)(0x4240 | ((targetReg & 0x7) << 3) | (targetReg & 0x7))); // RSBS Rd, Rn, #0
+                }
+                else if (prefix.IsKind(SyntaxKind.UnaryPlusExpression))
+                {
+                    EmitExpression(prefix.Operand, targetReg, context, tempOffset);
                 }
                 else if (prefix.IsKind(SyntaxKind.LogicalNotExpression))
                 {
@@ -391,7 +432,43 @@ namespace NETMCUCompiler.CodeBuilder
                     EmitMovImmediate(tmp, 1, context);
                     EmitArithmeticOp(SyntaxKind.ExclusiveOrExpression, targetReg, targetReg, tmp, context);
                 }
-                // Pre-increment / Pre-decrement logic can be placed here if used inside expression
+                else if (prefix.IsKind(SyntaxKind.BitwiseNotExpression))
+                {
+                    EmitExpression(prefix.Operand, targetReg, context, tempOffset);
+                    EmitArithmeticOp(SyntaxKind.BitwiseNotExpression, targetReg, targetReg, targetReg, context);
+                }
+                else if (prefix.IsKind(SyntaxKind.PreIncrementExpression) || prefix.IsKind(SyntaxKind.PreDecrementExpression))
+                {
+                    if (prefix.Operand is IdentifierNameSyntax prefixId && context.RegisterMap.TryGetValue(prefixId.Identifier.Text, out int varReg))
+                    {
+                        var kind = prefix.IsKind(SyntaxKind.PreIncrementExpression) ? SyntaxKind.AddExpression : SyntaxKind.SubtractExpression;
+                        EmitOpWithImmediate(kind, varReg, varReg, 1, context);
+                        if (targetReg != varReg)
+                            EmitMovRegister(targetReg, varReg, context);
+                    }
+                    else
+                    {
+                        // TODO: proper ref processing for prop/field/array increment
+                        context.Emit($"@ TODO: complex prefix ++/-- not fully supported yet");
+                    }
+                }
+            }
+            else if (expr is PostfixUnaryExpressionSyntax postfix)
+            {
+                // Для постфикса возвращаем *старое* значение: r_target = old_val, varReg = old_val +/- 1
+                if (postfix.Operand is IdentifierNameSyntax postfixId && context.RegisterMap.TryGetValue(postfixId.Identifier.Text, out int varReg))
+                {
+                    if (targetReg != varReg)
+                        EmitMovRegister(targetReg, varReg, context);
+
+                    var kind = postfix.IsKind(SyntaxKind.PostIncrementExpression) ? SyntaxKind.AddExpression : SyntaxKind.SubtractExpression;
+                    EmitOpWithImmediate(kind, varReg, varReg, 1, context);
+                }
+                else
+                {
+                    // TODO: proper ref processing
+                    context.Emit($"@ TODO: complex postfix ++/-- not fully supported yet");
+                }
             }
             else if (expr is ElementAccessExpressionSyntax elementAccess)
             {
@@ -417,6 +494,28 @@ namespace NETMCUCompiler.CodeBuilder
             }
             else if (expr is ParenthesizedExpressionSyntax paren)
                 EmitExpression(paren.Expression, targetReg, context, tempOffset);
+            else if (expr is SizeOfExpressionSyntax sizeOfExpr)
+            {
+                var typeSymbol = context.SemanticModel.GetTypeInfo(sizeOfExpr.Type).Type;
+                int size = 4; // Default reference/pointer/int size
+                if (typeSymbol != null)
+                {
+                    if (typeSymbol.SpecialType == SpecialType.System_Byte || typeSymbol.SpecialType == SpecialType.System_SByte || typeSymbol.SpecialType == SpecialType.System_Boolean) size = 1;
+                    else if (typeSymbol.SpecialType == SpecialType.System_Int16 || typeSymbol.SpecialType == SpecialType.System_UInt16 || typeSymbol.SpecialType == SpecialType.System_Char) size = 2;
+                    else if (typeSymbol.SpecialType == SpecialType.System_Int64 || typeSymbol.SpecialType == SpecialType.System_UInt64 || typeSymbol.SpecialType == SpecialType.System_Double) size = 8;
+                    else if (typeSymbol.SpecialType == SpecialType.System_Int32 || typeSymbol.SpecialType == SpecialType.System_UInt32 || typeSymbol.SpecialType == SpecialType.System_Single) size = 4;
+                    else if (typeSymbol.SpecialType == SpecialType.System_IntPtr || typeSymbol.SpecialType == SpecialType.System_UIntPtr) size = 4;
+                    else if (typeSymbol.TypeKind == TypeKind.Struct)
+                        size = Math.Max(1, typeSymbol.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4); // Simplistic struct size
+                }
+                EmitMovImmediate(targetReg, size, context);
+            }
+            else if (expr is TypeOfExpressionSyntax typeOfExpr)
+            {
+                // TODO: Return a pointer to type metadata object. For now we return 0 (null) or a stub id.
+                context.Emit($"@ TODO: typeof({typeOfExpr.Type})");
+                EmitMovImmediate(targetReg, 0, context);
+            }
             else if (expr is CastExpressionSyntax castExpr)
             {
                 // Для начала просто вычисляем внутреннее выражение (например, приведение типа/enum к int).
@@ -555,26 +654,62 @@ namespace NETMCUCompiler.CodeBuilder
             {
                 if (arrayCreation.Type.RankSpecifiers.Count > 0)
                 {
-                    var rank = arrayCreation.Type.RankSpecifiers[0];
-                    var sizeExpr = rank.Sizes[0];
+                    int lengthReg = tempOffset;
+                    int calcReg = tempOffset + 1;
 
-                    // evaluate the array size
-                    EmitExpression(sizeExpr, 0, context, tempOffset);
+                    if (arrayCreation.Initializer != null)
+                    {
+                        // Array from Initializer
+                        int count = arrayCreation.Initializer.Expressions.Count;
+                        EmitMovImmediate(lengthReg, count, context);
+                    }
+                    else
+                    {
+                        // Array from sizes
+                        var rank = arrayCreation.Type.RankSpecifiers[0];
+                        var sizeExpr = rank.Sizes[0];
+                        EmitExpression(sizeExpr, lengthReg, context, tempOffset);
+                    }
 
                     // multiply size by 4 bytes (assuming 32 bit structures/refs)
-                    int calcReg = tempOffset + 1;
-                    if (calcReg == 0) calcReg = 1;
-
                     EmitMovImmediate(calcReg, 4, context);
-                    EmitArithmeticOp(SyntaxKind.MultiplyExpression, 0, 0, calcReg, context);
+                    EmitArithmeticOp(SyntaxKind.MultiplyExpression, calcReg, lengthReg, calcReg, context);
 
+                    if (calcReg != 0) EmitMovRegister(0, calcReg, context);
                     EmitCall("NETMCU__Memory__Alloc", context, isStatic: true, isNative: true);
 
-                    if (targetReg != 0)
+                    int arrPtrReg = targetReg != 0 ? targetReg : tempOffset + 2;
+                    if (arrPtrReg != 0) EmitMovRegister(arrPtrReg, 0, context);
+
+                    // Initialize array if any values provided
+                    if (arrayCreation.Initializer != null)
                     {
-                        EmitMovRegister(targetReg, 0, context);
+                        var expressions = arrayCreation.Initializer.Expressions;
+                        for (int i = 0; i < expressions.Count; i++)
+                        {
+                            int valReg = tempOffset + 3;
+                            EmitExpression(expressions[i], valReg, context, valReg);
+
+                            int offsetReg = tempOffset + 4;
+                            EmitMovImmediate(offsetReg, i * 4, context);
+
+                            int targetAddr = tempOffset + 5;
+                            EmitMovRegister(targetAddr, arrPtrReg, context);
+                            EmitArithmeticOp(SyntaxKind.AddExpression, targetAddr, targetAddr, offsetReg, context);
+
+                            context.Emit($"STR r{valReg}, [r{targetAddr}, #0]");
+                        }
+                    }
+
+                    if (targetReg != 0 && targetReg != arrPtrReg)
+                    {
+                        EmitMovRegister(targetReg, arrPtrReg, context);
                     }
                 }
+            }
+            else if (expr is DefaultExpressionSyntax)
+            {
+                EmitMovImmediate(targetReg, 0, context);
             }
             else if (expr is InvocationExpressionSyntax invocation)
             {
@@ -744,7 +879,7 @@ namespace NETMCUCompiler.CodeBuilder
             context.Emit($"{jmpOp} {targetLabel}");
             // Заглушка для бинарника (относительный переход в Thumb-16)
             context.Bytecode(0x00);
-            context.Bytecode(0xD0); // Код инструкции B<cc> (0xD0 - 0xDF)
+            context.Bytecode((byte)(0xD0)); // Код инструкции B<cc> (0xD0 - 0xDF)
         }
         public static void EmitBranch(string label, string condition, MethodCompilationContext context)
         {
@@ -776,6 +911,7 @@ namespace NETMCUCompiler.CodeBuilder
 
             // 2. Обработка null (обычно 0)
             if (literal.IsKind(SyntaxKind.NullLiteralExpression)) return 0;
+            if (literal.IsKind(SyntaxKind.DefaultLiteralExpression)) return 0;
 
             if (literal.IsKind(SyntaxKind.StringLiteralExpression))
             {
@@ -790,9 +926,9 @@ namespace NETMCUCompiler.CodeBuilder
 
                 return int.Parse(valueText);
             }
-            catch
+            catch (Exception ex)
             {
-                throw new Exception("Неподдерживаемый тип константы");
+                throw new Exception($"Неподдерживаемый тип константы: {valueText} ({literal.Kind()})", ex);
             }
         }
         public static void EmitCall(string methodName, MethodCompilationContext context, bool isStatic, bool isNative)
@@ -893,7 +1029,7 @@ namespace NETMCUCompiler.CodeBuilder
         }
         public static void PatchThumb2BL(byte[] binary, int offset, int jumpOffset)
         {
-            // jumpOffset — это разница в байтах. BL прыгает по полусловам (halfwords).
+            // jumpOffset — это разница в байтах. BL прыгает по полсловам (halfwords).
             int val = jumpOffset >> 1;
 
             int sign = (val >> 23) & 1;

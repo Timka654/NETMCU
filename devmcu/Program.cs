@@ -7,8 +7,46 @@ namespace devmcu
         // Для Black Pill F401: LED на PC13
         const int LED_PIN = 13;
 
+        public static void ModifyValues(ref int a, out int b)
+        {
+            b = a * 2;
+            a = a + 5;
+        }
+
+        public static void TestExpressions()
+        {
+            int size = sizeof(int);
+            int sizeByte = sizeof(byte);
+
+            var tType = typeof(int);
+
+            int[] arr = new int[5];
+
+            // Default
+            int defInt = default(int);
+            int[] defArray = default;
+
+            // Unary operators tests
+            int counter = 0;
+            counter++;
+            ++counter;
+            counter--;
+            --counter;
+
+            bool isDone = false;
+            if (!isDone && counter == 1) 
+            {
+               isDone = true;
+            }
+        }
+
         public static void Main()
         {
+            int val1 = 10;
+            int val2;
+            ModifyValues(ref val1, out val2);
+
+            TestExpressions();
             HAL.Init();
 
             WriteLine("Hello, NETMCU!");

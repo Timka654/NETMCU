@@ -174,10 +174,18 @@ namespace NETMCUCompiler.CodeBuilder
 
         public bool TryGetConstant(ExpressionSyntax syntax, out object value)
         {
+            var constOpt = SemanticModel.GetConstantValue(syntax);
+            if (constOpt.HasValue) 
+            {
+                value = constOpt.Value;
+                return true;
+            }
+
             var t = SemanticModel.GetSymbolInfo(syntax);
 
-            if (TryGetConstant(t.Symbol.ToDisplayString(), out value)) return true;
+            if (t.Symbol != null && TryGetConstant(t.Symbol.ToDisplayString(), out value)) return true;
 
+            value = null;
             return false;
         }
 
