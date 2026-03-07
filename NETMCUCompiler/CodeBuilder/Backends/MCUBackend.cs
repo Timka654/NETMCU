@@ -27,5 +27,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         public abstract void GenerateReturnStatement(MethodCompilationContext context, ExpressionSyntax expression);
 
         public abstract void GenerateSwitchStatement(MethodCompilationContext context, ExpressionSyntax expression, SyntaxList<SwitchSectionSyntax> sections, Action<SwitchSectionSyntax> generateSectionBody, Action<string, string> registerLoopContext, Action popLoopContext);
+
+        public abstract void GenerateVariableDeclaration(MethodCompilationContext context, VariableDeclarationSyntax declaration);
     }
 }

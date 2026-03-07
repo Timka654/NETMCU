@@ -12,48 +12,7 @@ namespace NETMCUCompiler.CodeBuilder
 
         public void VisitVariableDeclaration(VariableDeclarationSyntax node)
         {
-            foreach (var variable in node.Variables)
-            {
-                string varName = variable.Identifier.Text;
-
-                if (context.StackMap.TryGetValue(varName, out var stackVar))
-                {
-                    context.Emit($"@ Allocation: {varName} -> Stack[{stackVar.StackOffset}]");
-                    if (variable.Initializer != null)
-                    {
-                        int tmpReg = context.NextFreeRegister++;
-                        ASMInstructions.EmitExpression(variable.Initializer.Value, tmpReg, context, 0);
-                        ASMInstructions.EmitMemoryAccess(false, tmpReg, 13, stackVar.StackOffset, context);
-                        context.NextFreeRegister--;
-                    }
-                }
-                else 
-                {
-                    int currentReg;
-                    if (context.RegisterMap.TryGetValue(varName, out int existingReg))
-                    {
-                        currentReg = existingReg;
-                    }
-                    else
-                    {
-                        if (context.NextFreeRegister > 11) throw new Exception("Закончились регистры r4-r11");
-                        currentReg = context.NextFreeRegister++;
-                        context.RegisterMap[varName] = currentReg;
-                    }
-
-                    context.Emit($"@ Allocation: {varName} -> r{currentReg}");
-
-                    if (variable.Initializer != null)
-                    {
-                        ASMInstructions.EmitExpression(
-                            variable.Initializer.Value,
-                            currentReg,
-                            context,
-                            0
-                        );
-                    }
-                }
-            }
+            context.Class.Global.Backend.GenerateVariableDeclaration(context, node);
         }
 
         public override void VisitLocalDeclarationStatement(LocalDeclarationStatementSyntax node)
