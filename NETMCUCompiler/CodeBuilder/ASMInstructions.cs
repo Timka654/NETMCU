@@ -1037,7 +1037,28 @@ namespace NETMCUCompiler.CodeBuilder
         {
             if (literal.Token.ValueText == "true") return 1;
             if (literal.Token.ValueText == "false") return 0;
-            return Convert.ToInt32(literal.Token.Value);
+            if (literal.Token.Value == null) return 0;
+
+            if (literal.IsKind(SyntaxKind.StringLiteralExpression))
+            {
+                if (context != null)
+                {
+                    var strValue = literal.Token.ValueText;
+                    var label = context.Class.Global.RegisterStringLiteral(strValue);
+                    // This is handled via rels usually, return 0 for now as it needs a relocation
+                    return 0;
+                }
+                return 0;
+            }
+
+            try
+            {
+                return Convert.ToInt32(literal.Token.Value);
+            }
+            catch
+            {
+                return 0;
+            }
         }
 
         public static void EmitCompare(int left, int right, MethodCompilationContext context)
