@@ -121,7 +121,12 @@ namespace NETMCUCompiler.CodeBuilder
 
         public void AddJump(string label, bool isConditional)
         {
-            Jumps.Add(new JumpRecord { TargetLabel = label, Offset = (int)Bin.Position, IsConditional = isConditional });
+            Jumps.Add(new JumpRecord { TargetLabel = label, Offset = (int)Bin.Position, IsConditional = isConditional, Type = isConditional ? JumpType.Conditional : JumpType.Unconditional });
+        }
+
+        public void AddLoadAddress(string label)
+        {
+            Jumps.Add(new JumpRecord { TargetLabel = label, Offset = (int)Bin.Position, IsConditional = false, Type = JumpType.LoadAddress });
         }
 
         public override CompilationContextTypeEnum ContextType => CompilationContextTypeEnum.Method;
@@ -140,10 +145,18 @@ namespace NETMCUCompiler.CodeBuilder
                     Metadata = tcc,
                     StackOffset = StackSize
                 };
-                StackSize += tcc.Size;
-
-                // Важно: в будущем нам нужно будет вычесть _currentStackPointer из SP 
-                // в начале метода (Prologue), чтобы зарезервировать место.
+                int size = tcc.Size;
+                StackSize += (size + 3) & ~3; // Align to 4 bytes
+            }
+            else
+            {
+                StackMap[name] = new StackVariable
+                {
+                    Name = name,
+                    Metadata = null,
+                    StackOffset = StackSize
+                };
+                StackSize += 4; // primitives
             }
         }
 
@@ -207,10 +220,19 @@ namespace NETMCUCompiler.CodeBuilder
         public override string ToString()
         => Name;
     }
+
+    public enum JumpType
+    {
+        Unconditional,
+        Conditional,
+        LoadAddress
+    }
+    
     public class JumpRecord
     {
         public string TargetLabel { get; set; } = null!;
         public int Offset { get; set; }
         public bool IsConditional { get; set; }
+        public JumpType Type { get; set; }
     }
 }

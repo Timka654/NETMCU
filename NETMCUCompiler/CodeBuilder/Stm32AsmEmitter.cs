@@ -51,28 +51,43 @@ namespace NETMCUCompiler.CodeBuilder
             foreach (var variable in node.Variables)
             {
                 string varName = variable.Identifier.Text;
-                int currentReg;
-                if (context.RegisterMap.TryGetValue(varName, out int existingReg))
-                {
-                    currentReg = existingReg;
-                }
-                else
-                {
-                    if (context.NextFreeRegister > 11) throw new Exception("Закончились регистры r4-r11");
-                    currentReg = context.NextFreeRegister++;
-                    context.RegisterMap[varName] = currentReg;
-                }
 
-                context.Emit($"@ Allocation: {varName} -> r{currentReg}");
-
-                if (variable.Initializer != null)
+                if (context.StackMap.TryGetValue(varName, out var stackVar))
                 {
-                    ASMInstructions.EmitExpression(
-                        variable.Initializer.Value,
-                        currentReg,
-                        context,
-                        0
-                    );
+                    context.Emit($"@ Allocation: {varName} -> Stack[{stackVar.StackOffset}]");
+                    if (variable.Initializer != null)
+                    {
+                        int tmpReg = context.NextFreeRegister++;
+                        ASMInstructions.EmitExpression(variable.Initializer.Value, tmpReg, context, 0);
+                        ASMInstructions.EmitMemoryAccess(false, tmpReg, 13, stackVar.StackOffset, context);
+                        context.NextFreeRegister--;
+                    }
+                }
+                else 
+                {
+                    int currentReg;
+                    if (context.RegisterMap.TryGetValue(varName, out int existingReg))
+                    {
+                        currentReg = existingReg;
+                    }
+                    else
+                    {
+                        if (context.NextFreeRegister > 11) throw new Exception("Закончились регистры r4-r11");
+                        currentReg = context.NextFreeRegister++;
+                        context.RegisterMap[varName] = currentReg;
+                    }
+
+                    context.Emit($"@ Allocation: {varName} -> r{currentReg}");
+
+                    if (variable.Initializer != null)
+                    {
+                        ASMInstructions.EmitExpression(
+                            variable.Initializer.Value,
+                            currentReg,
+                            context,
+                            0
+                        );
+                    }
                 }
             }
         }
@@ -246,22 +261,26 @@ namespace NETMCUCompiler.CodeBuilder
             string catchLabel = context.NextLabel("CATCH_HANDLER");
             string endLabel = context.NextLabel("TRY_END");
 
-            // Помещаем адрес обработчика в стек
-            context.Emit($"ldr r0, ={catchLabel}");
-            context.Emit("bl NETMCU_TryPush");
+            // Помещаем адрес обработчика в r0 и вызываем NETMCU_TryPush
+            context.Emit($"ADR.W r0, {catchLabel}");
+            context.AddLoadAddress(catchLabel);
+            context.Write32(0xF2AF0000); // Placeholder for ADR.W r0, label
+
+            ASMInstructions.EmitCall("NETMCU_TryPush", context, isStatic: true, isNative: true);
 
             Visit(node.Block);
 
             // Если блок выполнился успешно без throw, снимаем обработчик
-            context.Emit("bl NETMCU_TryPop");
-            context.Emit($"b {endLabel}");
+            ASMInstructions.EmitCall("NETMCU_TryPop", context, isStatic: true, isNative: true);
+            context.Emit($"B {endLabel}");
+            context.AddJump(endLabel, false);
+            context.Write16(0xE000); // branch empty
 
-            // Сам функция-обработчик catch (вызывается из throw, не раскручивая стек локальных переменных)
+            // Сам функция-обработчик catch (вызывается из throw)
             context.MarkLabel(catchLabel);
-            context.Emit("push {lr}");
 
             // Снимаем себя из стека обработчиков, чтобы следующий throw полетел выше
-            context.Emit("bl NETMCU_TryPop"); 
+            ASMInstructions.EmitCall("NETMCU_TryPop", context, isStatic: true, isNative: true); 
 
             // Обрабатываем блоки catch
             foreach (var catchClause in node.Catches)
@@ -271,7 +290,9 @@ namespace NETMCUCompiler.CodeBuilder
             }
 
             // Возврат в throw! (как и просил пользователь, без сложной раскрутки)
-            context.Emit("pop {pc}");
+            context.Emit($"B {endLabel}");
+            context.AddJump(endLabel, false);
+            context.Write16(0xE000); // branch empty
 
             context.MarkLabel(endLabel);
 
@@ -295,9 +316,10 @@ namespace NETMCUCompiler.CodeBuilder
             else
             {
                 context.Emit("mov r0, #0 @ Rethrow or null exception");
+                ASMInstructions.EmitMovImmediate(0, 0, context);
             }
 
-            context.Emit("bl NETMCU_Throw");
+            ASMInstructions.EmitCall("NETMCU_Throw", context, isStatic: true, isNative: true);
         }
 
         public override void VisitWhileStatement(WhileStatementSyntax node)
@@ -442,29 +464,12 @@ namespace NETMCUCompiler.CodeBuilder
         }
         public override void VisitPrefixUnaryExpression(PrefixUnaryExpressionSyntax node)
         {
-            HandleIncrementDecrement(node.Operand, node.Kind());
+            ASMInstructions.EmitExpression(node, 0, context);
         }
 
         public override void VisitPostfixUnaryExpression(PostfixUnaryExpressionSyntax node)
         {
-            HandleIncrementDecrement(node.Operand, node.Kind());
-        }
-
-        private void HandleIncrementDecrement(ExpressionSyntax operand, SyntaxKind kind)
-        {
-            if (operand is IdentifierNameSyntax id && context.RegisterMap.TryGetValue(id.Identifier.Text, out int reg))
-            {
-                if (kind == SyntaxKind.PreIncrementExpression || kind == SyntaxKind.PostIncrementExpression)
-                {
-                    // reg = reg + 1
-                    ASMInstructions.EmitOpWithImmediate(SyntaxKind.AddExpression, reg, reg, 1, context);
-                }
-                else if (kind == SyntaxKind.PreDecrementExpression || kind == SyntaxKind.PostDecrementExpression)
-                {
-                    // reg = reg - 1
-                    ASMInstructions.EmitOpWithImmediate(SyntaxKind.SubtractExpression, reg, reg, 1, context);
-                }
-            }
+            ASMInstructions.EmitExpression(node, 0, context);
         }
 
         public override void VisitExpressionStatement(ExpressionStatementSyntax node)
@@ -645,16 +650,7 @@ namespace NETMCUCompiler.CodeBuilder
             if (node.Left is ElementAccessExpressionSyntax elementAccess)
             {
                 int destAddrReg = context.NextFreeRegister++;
-                ASMInstructions.EmitExpression(elementAccess.Expression, destAddrReg, context);
-
-                int indexReg = context.NextFreeRegister++;
-                ASMInstructions.EmitExpression(elementAccess.ArgumentList.Arguments[0].Expression, indexReg, context);
-
-                int sizeReg = context.NextFreeRegister++;
-                ASMInstructions.EmitMovImmediate(sizeReg, 4, context);
-                ASMInstructions.EmitArithmeticOp(SyntaxKind.MultiplyExpression, indexReg, indexReg, sizeReg, context);
-
-                ASMInstructions.EmitArithmeticOp(SyntaxKind.AddExpression, destAddrReg, destAddrReg, indexReg, context);
+                ASMInstructions.EmitAddressOf(elementAccess, destAddrReg, context, context.NextFreeRegister);
 
                 int valueReg = 0;
                 ASMInstructions.EmitExpression(node.Right, valueReg, context);
@@ -685,7 +681,7 @@ namespace NETMCUCompiler.CodeBuilder
                     context.NextFreeRegister--;
                 }
 
-                context.NextFreeRegister -= 3;
+                context.NextFreeRegister--;
                 return;
             }
 
@@ -733,6 +729,33 @@ namespace NETMCUCompiler.CodeBuilder
                 if (context.RegisterMap.TryGetValue(varName, out int destReg))
                 {
                     HandleLocalAssignment(node, destReg, standardValueReg);
+                }
+                else if (context.StackMap.TryGetValue(varName, out var stackVar))
+                {
+                    if (node.IsKind(SyntaxKind.SimpleAssignmentExpression))
+                    {
+                        ASMInstructions.EmitMemoryAccess(false, standardValueReg, 13, stackVar.StackOffset, context);
+                    }
+                    else
+                    {
+                        SyntaxKind opKind = node.Kind() switch
+                        {
+                            SyntaxKind.AddAssignmentExpression => SyntaxKind.AddExpression,
+                            SyntaxKind.SubtractAssignmentExpression => SyntaxKind.SubtractExpression,
+                            SyntaxKind.AndAssignmentExpression => SyntaxKind.BitwiseAndExpression,
+                            SyntaxKind.OrAssignmentExpression => SyntaxKind.BitwiseOrExpression,
+                            _ => SyntaxKind.None
+                        };
+
+                        if (opKind != SyntaxKind.None)
+                        {
+                            int tmpReg = context.NextFreeRegister++;
+                            ASMInstructions.EmitMemoryAccess(true, tmpReg, 13, stackVar.StackOffset, context);
+                            ASMInstructions.EmitArithmeticOp(opKind, tmpReg, tmpReg, standardValueReg, context);
+                            ASMInstructions.EmitMemoryAccess(false, tmpReg, 13, stackVar.StackOffset, context);
+                            context.NextFreeRegister--;
+                        }
+                    }
                 }
                 else
                 {

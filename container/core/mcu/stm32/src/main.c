@@ -4,14 +4,46 @@
 #include <errno.h>
 
 // --- Runtime Exceptions ---
-#define EXCEPTION_STACK_SIZE 64
-static void* _ex_stack[EXCEPTION_STACK_SIZE];
-static int _ex_stack_ptr = 0;
+typedef struct {
+    uint32_t r4, r5, r6, r7, r8, r9, r10, r11;
+    uint32_t sp;
+    uint32_t catch_pc;
+} ExceptionFrame;
 
-void NETMCU_TryPush(void* handler) {
-    if (_ex_stack_ptr < EXCEPTION_STACK_SIZE) {
-        _ex_stack[_ex_stack_ptr++] = handler;
-    }
+#define EXCEPTION_STACK_SIZE 64
+ExceptionFrame _ex_stack[EXCEPTION_STACK_SIZE];
+int _ex_stack_ptr = 0;
+
+__attribute__((naked, used)) void NETMCU_TryPush(void* catch_pc) {
+    // r0 contains catch_pc
+    __asm volatile (
+        "ldr r1, =_ex_stack_ptr\n\t"
+        "ldr r2, [r1]\n\t"
+        "cmp r2, %0\n\t"
+        "bge 1f\n\t"    // overflow check
+        
+        "ldr r3, =_ex_stack\n\t"
+        "mov r12, #40\n\t"   // sizeof(ExceptionFrame)
+        "mul r12, r2, r12\n\t"
+        "add r3, r3, r12\n\t" // r3 = &_ex_stack[ptr]
+        
+        // save r4-r11
+        "stmia r3!, {r4-r11}\n\t"
+        
+        // save sp
+        "mov r4, sp\n\t"
+        "str r4, [r3], #4\n\t"
+        
+        // save catch_pc
+        "str r0, [r3], #4\n\t"
+        
+        "add r2, r2, #1\n\t"
+        "str r2, [r1]\n\t"
+        
+        "1:\n\t"
+        "bx lr\n\t"
+        : : "i" (EXCEPTION_STACK_SIZE)
+    );
 }
 
 void NETMCU_TryPop() {
@@ -20,16 +52,36 @@ void NETMCU_TryPop() {
     }
 }
 
-void NETMCU_Throw(void* exception_obj) {
-    if (_ex_stack_ptr > 0) {
-        // Берем верхний обработчик (catch) и вызываем его как функцию.
-        // Он может выбросить further_throw, поэтому мы просто вызываем.
-        void (*handler)(void*) = _ex_stack[_ex_stack_ptr - 1];
-        handler(exception_obj);
-    } else {
-        // Unhandled exception hang
-        while(1) { }
-    }
+__attribute__((naked, used)) void NETMCU_Throw(void* exception_obj) {
+    __asm volatile (
+        "ldr r1, =_ex_stack_ptr\n\t"
+        "ldr r2, [r1]\n\t"
+        "cmp r2, #0\n\t"
+        "ble unhandled_ex\n\t"
+        
+        "sub r2, r2, #1\n\t"
+        "str r2, [r1]\n\t"
+        
+        "ldr r3, =_ex_stack\n\t"
+        "mov r12, #40\n\t"
+        "mul r12, r2, r12\n\t"
+        "add r3, r3, r12\n\t" // r3 = &_ex_stack[ptr]
+        
+        // r0 still has exception_obj
+        
+        // restore r4-r11
+        "ldmia r3!, {r4-r11}\n\t"
+        
+        // restore sp
+        "ldr r12, [r3], #4\n\t"
+        "mov sp, r12\n\t"
+        
+        // jump to catch_pc
+        "ldr pc, [r3], #4\n\t"
+        
+        "unhandled_ex:\n\t"
+        "b unhandled_ex\n\t"
+    );
 }
 // --------------------------
 
@@ -210,6 +262,9 @@ __attribute__((used)) void NETMCU__Memory__Collect() {
     // Blocks with marked == 2 are active (Black).
 }
 
+__attribute__((used)) void* NETMCU__Unsafe__AsPointer(void* val) { return val; }
+__attribute__((used)) void* NETMCU__Unsafe__As(void* val) { return val; }
+
 // Поток / Время
 __attribute__((used)) void NETMCU__Thread__Sleep(uint32_t ms) {
     // Здесь должна быть твоя реализация задержки (HAL_Delay или пустой цикл)
@@ -224,6 +279,11 @@ volatile void* _keep_Memory_Alloc = (void*)NETMCU__Memory__Alloc;
 volatile void* _keep_Memory_Free = (void*)NETMCU__Memory__Free;
 volatile void* _keep_Memory_Collect = (void*)NETMCU__Memory__Collect;
 volatile void* _keep_Thread_Sleep = (void*)NETMCU__Thread__Sleep;
+volatile void* _keep_Core_Throw = (void*)NETMCU_Throw;
+volatile void* _keep_Core_TryPush = (void*)NETMCU_TryPush;
+volatile void* _keep_Core_TryPop = (void*)NETMCU_TryPop;
+volatile void* _keep_Unsafe_As = (void*)NETMCU__Unsafe__As;
+volatile void* _keep_Unsafe_AsPointer = (void*)NETMCU__Unsafe__AsPointer;
 
 // Функция для перехода к пользовательскому коду
 void jump_to_user(uint32_t address) {

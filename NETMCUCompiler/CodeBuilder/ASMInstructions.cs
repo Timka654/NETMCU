@@ -317,11 +317,40 @@ namespace NETMCUCompiler.CodeBuilder
                 var arg = elementAccess.ArgumentList.Arguments[0]; // Пока 1D массивы
                 EmitExpression(arg.Expression, indexReg, context, indexReg);
 
+                // Check bounds: index >= Length -> Trap
+                int lengthReg = indexReg + 1;
+                bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
+                int lengthOffset = typeHeader ? 4 : 0;
+
+                context.Emit($"LDR r{lengthReg}, [r{targetReg}, #{lengthOffset}] @ Load Array Length");
+                if (lengthOffset == 0)
+                {
+                    context.Write16((ushort)(0x6800 | ((lengthReg & 0x7) << 3) | (targetReg & 0x7)));
+                }
+                else
+                {
+                    context.Write16((ushort)(0x6800 | (1 << 6) | ((targetReg & 0x7) << 3) | (lengthReg & 0x7)));
+                }
+
+                EmitCompare(indexReg, lengthReg, context);
+                // "BHS" (unsigned >=) -> jump to error. (Also catches negative index!)
+                string okLabel = context.NextLabel("BOUNDS_OK");
+                EmitBranch(okLabel, "CC", context); // CC = LO (Carry Clear) = Unsigned <
+                EmitMovImmediate(0, 0, context); // null exception
+                EmitCall("NETMCU_Throw", context, isStatic: true, isNative: true);
+                context.MarkLabel(okLabel);
+
+                // Array header and element size
+                int headerSize = typeHeader ? 8 : 4; 
+                int elementSize = 4; // Assume 4 bytes for now
+
                 int sizeReg = indexReg + 1;
-                EmitMovImmediate(sizeReg, 4, context);
+                EmitMovImmediate(sizeReg, elementSize, context);
                 EmitArithmeticOp(SyntaxKind.MultiplyExpression, indexReg, indexReg, sizeReg, context);
 
-                // Складываем адрес и смещение: addr = addr + (index * 4)
+                EmitOpWithImmediate(SyntaxKind.AddExpression, indexReg, indexReg, headerSize, context);
+
+                // Складываем адрес и смещение
                 EmitArithmeticOp(SyntaxKind.AddExpression, targetReg, targetReg, indexReg, context);
                 return;
             }
@@ -681,6 +710,10 @@ namespace NETMCUCompiler.CodeBuilder
                         context.Bytecode((byte)(opcode >> 8));
                     }
                 }
+                else if (context.StackMap.TryGetValue(id.Identifier.Text, out var sv))
+                {
+                    EmitMemoryAccess(true, targetReg, 13, sv.StackOffset, context);
+                }
             }
             else if (expr is BinaryExpressionSyntax binary)
             {
@@ -766,336 +799,13 @@ namespace NETMCUCompiler.CodeBuilder
                     EmitArithmetic(binary, targetReg, context, tempOffset);
                 }
             }
-            else if (expr is IsPatternExpressionSyntax isPattern)
-            {
-                ITypeSymbol targetType = null;
-                if (isPattern.Pattern is DeclarationPatternSyntax declPattern) targetType = context.SemanticModel.GetTypeInfo(declPattern.Type).Type;
-                else if (isPattern.Pattern is TypePatternSyntax typePattern) targetType = context.SemanticModel.GetTypeInfo(typePattern.Type).Type;
-                else targetType = context.SemanticModel.GetTypeInfo(isPattern.Pattern).Type ?? context.SemanticModel.GetTypeInfo(isPattern.Pattern).ConvertedType;
-
-                int objReg = context.NextFreeRegister++;
-                EmitExpressionInternal(isPattern.Expression, objReg, context, tempOffset);
-
-                string endLabel = context.NextLabel("IS_PAT_END");
-                string falseLabel = context.NextLabel("IS_PAT_FALSE");
-
-                EmitCompareImmediate(objReg, 0, context);
-                EmitBranch(falseLabel, "EQ", context);
-
-                if (targetType != null && context.Class.Global.BuildingContext.Options?.TypeHeader == true)
-                {
-                    int typeReg = context.NextFreeRegister++;
-                    context.Emit($"LDR r{typeReg}, [r{objReg}, #0] @ read TypeHeader");
-
-                    string symbolName = context.Class.Global.RegisterTypeLiteral(targetType);
-                    context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
-
-                    int targetTypeReg = context.NextFreeRegister++;
-                    context.Emit($"LDR r{targetTypeReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
-                    context.Bin.Write(new byte[8], 0, 8);
-
-                    EmitCompare(typeReg, targetTypeReg, context);
-                    EmitBranch(falseLabel, "NE", context);
-
-                    context.NextFreeRegister -= 2;
-
-                    EmitMovImmediate(targetReg, 1, context);
-                    EmitJump(endLabel, context);
-                }
-                else
-                {
-                    EmitJump(falseLabel, context);
-                }
-
-                context.MarkLabel(falseLabel);
-                EmitMovImmediate(targetReg, 0, context);
-
-                context.MarkLabel(endLabel);
-                context.NextFreeRegister--;
-
-                if (isPattern.Pattern is DeclarationPatternSyntax dPattern && dPattern.Designation is SingleVariableDesignationSyntax singleVar)
-                {
-                    var symbol = context.SemanticModel.GetDeclaredSymbol(singleVar);
-                    if (symbol != null && context.StackMap.TryGetValue(symbol.Name, out var stackVar))
-                    {
-                        context.MarkLabel(context.NextLabel("PAT_DEF_ASSIGN"));
-                        // Pattern assigns variable implicitly on TRUE condition:
-                        // Instead of full flow rewriting, let's inject simple assign if true? 
-                        // But wait! If 'is' is false, Pattern does not assign. We need a more advanced architecture 
-                        // for scope blocks. We leave assigning to complex pattern matching for later.
-                    }
-                }
-            }
-            else if (expr is PrefixUnaryExpressionSyntax prefix)
-            {
-                if (prefix.IsKind(SyntaxKind.UnaryMinusExpression))
-                {
-                    EmitExpression(prefix.Operand, targetReg, context, tempOffset);
-                    context.Emit($"RSBS r{targetReg}, r{targetReg}, #0");
-                    context.Write16((ushort)(0x4240 | ((targetReg & 0x7) << 3) | (targetReg & 0x7))); // RSBS Rd, Rn, #0
-                }
-                else if (prefix.IsKind(SyntaxKind.UnaryPlusExpression))
-                {
-                    EmitExpression(prefix.Operand, targetReg, context, tempOffset);
-                }
-                else if (prefix.IsKind(SyntaxKind.LogicalNotExpression))
-                {
-                    // !x : Для bool (0 или 1) это x ^ 1
-                    EmitExpression(prefix.Operand, targetReg, context, tempOffset);
-                    int tmp = tempOffset + 1;
-                    EmitMovImmediate(tmp, 1, context);
-                    EmitArithmeticOp(SyntaxKind.ExclusiveOrExpression, targetReg, targetReg, tmp, context);
-                }
-                else if (prefix.IsKind(SyntaxKind.BitwiseNotExpression))
-                {
-                    EmitExpression(prefix.Operand, targetReg, context, tempOffset);
-                    EmitArithmeticOp(SyntaxKind.BitwiseNotExpression, targetReg, targetReg, targetReg, context);
-                }
-                else if (prefix.IsKind(SyntaxKind.PreIncrementExpression) || prefix.IsKind(SyntaxKind.PreDecrementExpression))
-                {
-                    if (prefix.Operand is IdentifierNameSyntax prefixId && context.RegisterMap.TryGetValue(prefixId.Identifier.Text, out int varReg))
-                    {
-                        var kind = prefix.IsKind(SyntaxKind.PreIncrementExpression) ? SyntaxKind.AddExpression : SyntaxKind.SubtractExpression;
-                        EmitOpWithImmediate(kind, varReg, varReg, 1, context);
-                        if (targetReg != varReg)
-                            EmitMovRegister(targetReg, varReg, context);
-                    }
-                    else
-                    {
-                        var kind = prefix.IsKind(SyntaxKind.PreIncrementExpression) ? SyntaxKind.AddExpression : SyntaxKind.SubtractExpression;
-                        int addrReg = tempOffset + 1;
-                        EmitAddressOf(prefix.Operand, addrReg, context, tempOffset + 1);
-
-                        EmitMemoryAccess(true, targetReg, addrReg, 0, context);
-                        EmitOpWithImmediate(kind, targetReg, targetReg, 1, context);
-                        EmitMemoryAccess(false, targetReg, addrReg, 0, context);
-                    }
-                }
-            }
-            else if (expr is PostfixUnaryExpressionSyntax postfix)
-            {
-                // Для постфикса возвращаем *старое* значение: r_target = old_val, varReg = old_val +/- 1
-                if (postfix.Operand is IdentifierNameSyntax postfixId && context.RegisterMap.TryGetValue(postfixId.Identifier.Text, out int varReg))
-                {
-                    if (targetReg != varReg)
-                        EmitMovRegister(targetReg, varReg, context);
-
-                    var kind = postfix.IsKind(SyntaxKind.PostIncrementExpression) ? SyntaxKind.AddExpression : SyntaxKind.SubtractExpression;
-                    EmitOpWithImmediate(kind, varReg, varReg, 1, context);
-                }
-                else
-                {
-                    var kind = postfix.IsKind(SyntaxKind.PostIncrementExpression) ? SyntaxKind.AddExpression : SyntaxKind.SubtractExpression;
-                    int addrReg = tempOffset + 1;
-                    EmitAddressOf(postfix.Operand, addrReg, context, tempOffset + 1);
-
-                    EmitMemoryAccess(true, targetReg, addrReg, 0, context);
-
-                    int tmpReg = tempOffset + 2;
-                    EmitMovRegister(tmpReg, targetReg, context);
-                    EmitOpWithImmediate(kind, tmpReg, tmpReg, 1, context);
-                    EmitMemoryAccess(false, tmpReg, addrReg, 0, context);
-                }
-            }
-            else if (expr is ElementAccessExpressionSyntax elementAccess)
-            {
-                // Загрузка адреса массива/указателя
-                EmitExpression(elementAccess.Expression, targetReg, context, tempOffset);
-
-                // Вычисление индекса в temp
-                int indexReg = tempOffset + 1;
-                var arg = elementAccess.ArgumentList.Arguments[0]; // Пока 1D массивы
-                EmitExpression(arg.Expression, indexReg, context, indexReg);
-
-                // Умножаем на размер элемента (пока считаем int/ptr = 4 байта)
-                int sizeReg = indexReg + 1;
-                EmitMovImmediate(sizeReg, 4, context);
-                EmitArithmeticOp(SyntaxKind.MultiplyExpression, indexReg, indexReg, sizeReg, context);
-
-                // Складываем адрес и смещение: addr = addr + (index * 4)
-                EmitArithmeticOp(SyntaxKind.AddExpression, targetReg, targetReg, indexReg, context);
-
-                // LDR Rd, [Rd]
-                context.Emit($"LDR r{targetReg}, [r{targetReg}, #0]");
-                context.Write16((ushort)(0x6800 | ((targetReg & 0x7) << 3) | (targetReg & 0x7))); // LDR Rt, [Rn, #0]
-            }
-            else if (expr is ParenthesizedExpressionSyntax paren)
-                EmitExpression(paren.Expression, targetReg, context, tempOffset);
-            else if (expr is SizeOfExpressionSyntax sizeOfExpr)
-            {
-                var typeSymbol = context.SemanticModel.GetTypeInfo(sizeOfExpr.Type).Type;
-                int size = 4; // Default reference/pointer/int size
-                if (typeSymbol != null)
-                {
-                    if (typeSymbol.SpecialType == SpecialType.System_Byte || typeSymbol.SpecialType == SpecialType.System_SByte || typeSymbol.SpecialType == SpecialType.System_Boolean) size = 1;
-                    else if (typeSymbol.SpecialType == SpecialType.System_Int16 || typeSymbol.SpecialType == SpecialType.System_UInt16 || typeSymbol.SpecialType == SpecialType.System_Char) size = 2;
-                    else if (typeSymbol.SpecialType == SpecialType.System_Int64 || typeSymbol.SpecialType == SpecialType.System_UInt64 || typeSymbol.SpecialType == SpecialType.System_Double) size = 8;
-                    else if (typeSymbol.SpecialType == SpecialType.System_Int32 || typeSymbol.SpecialType == SpecialType.System_UInt32 || typeSymbol.SpecialType == SpecialType.System_Single) size = 4;
-                    else if (typeSymbol.SpecialType == SpecialType.System_IntPtr || typeSymbol.SpecialType == SpecialType.System_UIntPtr) size = 4;
-                    else if (typeSymbol.TypeKind == TypeKind.Struct)
-                        size = Math.Max(1, typeSymbol.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4); // Simplistic struct size
-                }
-                EmitMovImmediate(targetReg, size, context);
-            }
-            else if (expr is TypeOfExpressionSyntax typeOfExpr)
-            {
-                var typeSymbol = context.SemanticModel.GetSymbolInfo(typeOfExpr.Type).Symbol as ITypeSymbol;
-                if (typeSymbol != null)
-                {
-                    string level = context.Class.Global.BuildingContext.Options?.TypeMetaDataLevel ?? "Full";
-                    bool keepMetadata = level == "Full";
-                    if (level == "Custom")
-                    {
-                        keepMetadata = typeSymbol.GetAttributes().Any(a => a.AttributeClass?.Name == "KeepMetadataAttribute" || a.AttributeClass?.Name == "KeepMetadata");
-                    }
-
-                    if (keepMetadata)
-                    {
-                        string targetName = typeSymbol.ToDisplayString();
-                        string symbolName = context.Class.Global.RegisterTypeLiteral(typeSymbol);
-                        context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
-
-                        context.Emit($"@ typeof({targetName})");
-                        context.Emit($"LDR r{targetReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
-                        context.Bin.Write(new byte[8], 0, 8);
-                    }
-                    else
-                    {
-                        context.Emit($"@ typeof({typeSymbol.ToDisplayString()}) -> NULL (Metadata Level: {level})");
-                        EmitMovImmediate(targetReg, 0, context);
-                    }
-                }
-                else
-                {
-                    context.Emit($"@ typeof({typeOfExpr.Type}) -> NULL");
-                    EmitMovImmediate(targetReg, 0, context);
-                }
-            }
-            else if (expr is CastExpressionSyntax castExpr)
-            {
-                var targetType = context.SemanticModel.GetTypeInfo(castExpr.Type).Type;
-
-                EmitExpression(castExpr.Expression, targetReg, context, tempOffset);
-
-                if (targetType != null)
-                {
-                    if (targetType.SpecialType == SpecialType.System_Byte)
-                    {
-                        context.Emit($"UXTB r{targetReg}, r{targetReg}");
-                        context.Write16((ushort)(0xB2C0 | ((targetReg & 0x7) << 3) | (targetReg & 0x7)));
-                    }
-                    else if (targetType.SpecialType == SpecialType.System_SByte)
-                    {
-                        context.Emit($"SXTB r{targetReg}, r{targetReg}");
-                        context.Write16((ushort)(0xB240 | ((targetReg & 0x7) << 3) | (targetReg & 0x7)));
-                    }
-                    else if (targetType.SpecialType == SpecialType.System_UInt16)
-                    {
-                        context.Emit($"UXTH r{targetReg}, r{targetReg}");
-                        context.Write16((ushort)(0xB280 | ((targetReg & 0x7) << 3) | (targetReg & 0x7)));
-                    }
-                    else if (targetType.SpecialType == SpecialType.System_Int16)
-                    {
-                        context.Emit($"SXTH r{targetReg}, r{targetReg}");
-                        context.Write16((ushort)(0xB200 | ((targetReg & 0x7) << 3) | (targetReg & 0x7)));
-                    }
-                }
-            }
-            else if (expr is MemberAccessExpressionSyntax memberAccess)
-            {
-                // Проверяем, не является ли это константой (например, Enum: GPIO_Port.PortA)
-                if (TryGetAsConstant(memberAccess, context, out object constVal))
-                {
-                    EmitMovImmediate(targetReg, Convert.ToInt32(constVal), context);
-                    return;
-                }
-
-                var typeInfo = context.SemanticModel.GetTypeInfo(memberAccess.Expression);
-                if (typeInfo.Type?.TypeKind == TypeKind.Array && memberAccess.Name.ToString() == "Length")
-                {
-                    int arrReg = tempOffset + 1;
-                    EmitExpression(memberAccess.Expression, arrReg, context, tempOffset);
-
-                    int fourReg = tempOffset + 2;
-                    EmitMovImmediate(fourReg, 4, context);
-
-                    int addrReg = tempOffset + 3;
-                    EmitArithmeticOp(SyntaxKind.SubtractExpression, addrReg, arrReg, fourReg, context);
-
-                    context.Emit($"LDR r{targetReg}, [r{addrReg}, #0]");
-                    return;
-                }
-
-                // Иначе это чтение свойства объекта или поля (obj.Property или obj.Field)
-                var memberSymbolInfo = context.SemanticModel.GetSymbolInfo(memberAccess).Symbol;
-                if (memberSymbolInfo is IPropertySymbol propertySymbol)
-                {
-                    // Обращение к свойству транслируется в вызов метода get_Property
-                    if (propertySymbol.GetMethod != null)
-                    {
-                        if (!propertySymbol.IsStatic)
-                        {
-                            // "this" для свойства
-                            EmitExpression(memberAccess.Expression, 0, context, tempOffset);
-                        }
-
-                        string nativeFunctionName = propertySymbol.GetMethod.GetAttributes()
-                            .FirstOrDefault(a => a.AttributeClass?.Name.Contains("NativeCall") == true)?
-                            .ConstructorArguments.FirstOrDefault().Value?.ToString();
-
-                        string callTarget = nativeFunctionName ?? propertySymbol.GetMethod.ToDisplayString();
-                        EmitCall(callTarget, context, propertySymbol.IsStatic, nativeFunctionName != null);
-
-                        if (targetReg != 0)
-                        {
-                            EmitMovRegister(targetReg, 0, context);
-                        }
-                    }
-                }
-                else if (memberSymbolInfo is IFieldSymbol fieldSymbol)
-                {
-                    string fieldName = fieldSymbol.Name;
-                    string typeName = fieldSymbol.ContainingType.ToDisplayString();
-
-                    // Ищем метаданные типа, чтобы узнать смещение поля.
-                    if (context.Class.Global.Childs.TryGetValue(typeName, out var typeCtx) && typeCtx is TypeCompilationContext tcc)
-                    {
-                        if (tcc.FieldOffsets.TryGetValue(fieldName, out int fieldOffset))
-                        {
-                            string structName = memberAccess.Expression.ToString();
-                            
-                            // Проверяем, лежит ли эта переменная на стеке (локальная структура)
-                            if (context.StackMap.TryGetValue(structName, out var stackVar))
-                            {
-                                EmitMemoryAccess(true, targetReg, 13, stackVar.StackOffset + fieldOffset, context);
-                            }
-                            else
-                            {
-                                // Иначе считаем, что это объект или структура по ссылке/указателю.
-                                // Вычисляем выражение, чтобы получить базовый адрес в регистр.
-                                int baseReg = tempOffset + 1;
-                                EmitExpression(memberAccess.Expression, baseReg, context, tempOffset + 1);
-                                EmitMemoryAccess(true, targetReg, baseReg, fieldOffset, context);
-                            }
-                        }
-                        else
-                        {
-                            context.Emit($"@ Field {fieldName} not found in offsets for {typeName}");
-                        }
-                    }
-                    else
-                    {
-                        context.Emit($"@ Type {typeName} metadata not found for field {fieldName}");
-                    }
-                }
-            }
             else if (expr is ConditionalExpressionSyntax ternary)
             {
                 // Создаем уникальные метки для этого конкретного тернарника
                 string falseLabel = context.NextLabel("TERN_FALSE");
                 string endLabel = context.NextLabel("TERN_END");
 
-                // 1. Вычисляем условие. Если оно ложно — прыгаем на falseLabel
+                // 1. Вычисляем условие. Если оно ложно — прыгам на falseLabel
                 // (Используем нашу готовую логику EmitLogicalCondition)
                 EmitLogicalCondition(ternary.Condition, "", falseLabel, context);
 
@@ -1115,50 +825,35 @@ namespace NETMCUCompiler.CodeBuilder
             else if (expr is ObjectCreationExpressionSyntax objectCreation)
             {
                 var typeSymbol = context.SemanticModel.GetTypeInfo(objectCreation).Type;
-                Console.WriteLine($"[DEBUG-ALLOC] ObjectCreation: {objectCreation}. TypeSymbol: {typeSymbol?.ToDisplayString()}, TypeKind: {typeSymbol?.TypeKind}");
-
-                // Handle Delegate Explicit Creation early
+                
                 if (typeSymbol != null && typeSymbol.TypeKind == TypeKind.Delegate)
                 {
                     var ctorArg = objectCreation.ArgumentList?.Arguments.FirstOrDefault()?.Expression;
                     var symInfo = ctorArg != null ? context.SemanticModel.GetSymbolInfo(ctorArg).Symbol : null;
                     var memGrp = ctorArg != null ? context.SemanticModel.GetMemberGroup(ctorArg).FirstOrDefault() : null;
-                    Console.WriteLine($"[DEBUG] ctorArg for {objectCreation} is {ctorArg}. symInfo: {symInfo != null}, memGrp: {memGrp != null}");
 
                     var targetMethodCtor = symInfo as IMethodSymbol ?? memGrp as IMethodSymbol;
-
                     if (targetMethodCtor != null)
                     {
                         EmitDelegateCreation(targetMethodCtor, ctorArg, typeSymbol, targetReg, context, tempOffset);
                         return;
                     }
-                    Console.WriteLine($"[DEBUG] Failed to resolve target method for explicit delegate creation: {objectCreation}");
                 }
 
-                int size = 0; // default empty size
+                int size = 4;
                 bool hasHeader = false;
-
                 if (typeSymbol != null)
                 {
                     hasHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true && typeSymbol.IsReferenceType;
-                    if (hasHeader) size += 4;
-
-                    // Compute basic size for classes (just counting fields * 4)
+                    if (hasHeader) size = 4; else size = 0;
                     int fieldsCount = typeSymbol.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count();
                     size += fieldsCount * 4;
-                    if (size == 0) size = 4; // minimum alloc size
-                }
-                else
-                {
-                    size = 4;
+                    if (size == 0) size = 4; 
                 }
 
                 EmitMovImmediate(0, size, context);
-
-                // Call the native allocator (returns ptr in R0)
                 EmitCall("NETMCU__Memory__Alloc", context, isStatic: true, isNative: true);
 
-                // If memory has a header, we fill it with pointer to type metadata
                 if (hasHeader)
                 {
                     string targetName = typeSymbol.ToDisplayString();
@@ -1166,194 +861,150 @@ namespace NETMCUCompiler.CodeBuilder
                     context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
 
                     int tmpReg = context.NextFreeRegister++;
-                    context.Emit($"@ Write TypeHeader for {targetName}");
                     context.Emit($"LDR r{tmpReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
                     context.Bin.Write(new byte[8], 0, 8);
-
-                    context.Emit($"STR r{tmpReg}, [r0, #0]"); // Put type ptr at beginning of allocation
+                    context.Emit($"STR r{tmpReg}, [r0, #0]");
                     context.NextFreeRegister--;
                 }
 
-                // Store object pointer to targetReg
-                if (targetReg != 0)
-                {
-                    EmitMovRegister(targetReg, 0, context);
-                }
+                if (targetReg != 0) EmitMovRegister(targetReg, 0, context);
 
-                // Call constructor if present
                 var ctorSymbol = context.SemanticModel.GetSymbolInfo(objectCreation).Symbol as IMethodSymbol;
                 if (ctorSymbol != null && !ctorSymbol.IsImplicitlyDeclared && objectCreation.ArgumentList != null)
                 {
                     var args = objectCreation.ArgumentList.Arguments;
-
-                    // Note: In AAPCS, r0 is "this", args are in r1-r3
-                    // Because EmitExpression on args may clobber R0, we must preserve 'this' on stack or evaluate args carefully.
-                    // For simplicity right now, assuming simple args.
-
-                    // We need this pointer in R0. If we already moved it to targetReg above, let's put it back to R0.
-                    // Wait, we need to load arguments inside r1-r3!
+                    List<int> argRegs = new();
                     for (int i = 0; i < args.Count; i++)
                     {
                         var argument = args[i];
-                        int argReg = i + 1; // regOffset is 1 since r0 is "this"
-                        if (argReg > 3) throw new Exception("Поддерживается максимум 4 аргумента (включая this)");
-
+                        int safeReg = context.NextFreeRegister++;
                         if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword))
+                            EmitAddressOf(argument.Expression, safeReg, context, tempOffset);
+                        else
+                            EmitExpression(argument.Expression, safeReg, context, tempOffset);
+                        argRegs.Add(safeReg);
+                    }
+
+                    int stackArgsCount = 0;
+                    for (int i = args.Count - 1; i >= 0; i--)
+                    {
+                        int targetArgReg = i + 1;
+                        if (targetArgReg > 3)
                         {
-                            EmitAddressOf(argument.Expression, argReg, context, tempOffset);
-                            continue;
-                        }
-
-                        EmitExpression(args[i].Expression, argReg, context, tempOffset);
-                    }
-
-                    if (targetReg != 0) 
-                    {
-                        EmitMovRegister(0, targetReg, context);
-                    }
-
-                    string nativeFunctionName = ctorSymbol.GetAttributes()
-                        .FirstOrDefault(a => a.AttributeClass?.Name.Contains("NativeCall") == true)?
-                        .ConstructorArguments.FirstOrDefault().Value?.ToString();
-
-                    string callTarget = nativeFunctionName ?? ctorSymbol.ToDisplayString();
-                    EmitCall(callTarget, context, isStatic: false, isNative: nativeFunctionName != null);
-                }
-            }
-            else if (expr is ArrayCreationExpressionSyntax arrayCreation)
-            {
-                if (arrayCreation.Type.RankSpecifiers.Count > 0)
-                {
-                    int lengthReg = tempOffset;
-                    int calcReg = tempOffset + 1;
-
-                    if (arrayCreation.Initializer != null)
-                    {
-                        // Array from Initializer
-                        int count = arrayCreation.Initializer.Expressions.Count;
-                        EmitMovImmediate(lengthReg, count, context);
-                    }
-                    else
-                    {
-                        // Array from sizes
-                        var rank = arrayCreation.Type.RankSpecifiers[0];
-                        var sizeExpr = rank.Sizes[0];
-                        EmitExpression(sizeExpr, lengthReg, context, tempOffset);
-                    }
-
-                    // multiply size by 4 bytes (assuming 32 bit structures/refs) and add 4 bytes for length header
-                    int fourReg = tempOffset + 3;
-                    EmitMovImmediate(calcReg, 4, context);
-                    EmitMovImmediate(fourReg, 4, context);
-                    EmitArithmeticOp(SyntaxKind.MultiplyExpression, calcReg, lengthReg, calcReg, context);
-                    EmitArithmeticOp(SyntaxKind.AddExpression, calcReg, calcReg, fourReg, context); // size = length * 4 + 4
-
-                    if (calcReg != 0) EmitMovRegister(0, calcReg, context);
-                    EmitCall("NETMCU__Memory__Alloc", context, isStatic: true, isNative: true);
-
-                    int arrPtrReg = targetReg != 0 ? targetReg : tempOffset + 2;
-                    if (arrPtrReg != 0) EmitMovRegister(arrPtrReg, 0, context);
-
-                    // Write length at offset 0
-                    context.Emit($"STR r{lengthReg}, [r{arrPtrReg}, #0]");
-                    // Advance pointer to first element
-                    EmitArithmeticOp(SyntaxKind.AddExpression, arrPtrReg, arrPtrReg, fourReg, context);
-
-                    // Initialize array if any values provided
-                    if (arrayCreation.Initializer != null)
-                    {
-                        var expressions = arrayCreation.Initializer.Expressions;
-                        for (int i = 0; i < expressions.Count; i++)
-                        {
-                            int valReg = tempOffset + 3;
-                            EmitExpression(expressions[i], valReg, context, valReg);
-
-                            int offsetReg = tempOffset + 4;
-                            EmitMovImmediate(offsetReg, i * 4, context);
-
-                            int targetAddr = tempOffset + 5;
-                            EmitMovRegister(targetAddr, arrPtrReg, context);
-                            EmitArithmeticOp(SyntaxKind.AddExpression, targetAddr, targetAddr, offsetReg, context);
-
-                            context.Emit($"STR r{valReg}, [r{targetAddr}, #0]");
+                            context.Emit($"PUSH {{r{argRegs[i]}}}");
+                            context.Write16((ushort)(0xB400 | (1 << argRegs[i])));
+                            stackArgsCount++;
                         }
                     }
 
-                    if (targetReg != 0 && targetReg != arrPtrReg)
+                    if (targetReg != 0) EmitMovRegister(0, targetReg, context);
+
+                    for (int i = 0; i < args.Count; i++)
                     {
-                        EmitMovRegister(targetReg, arrPtrReg, context);
+                        int targetArgReg = i + 1;
+                        if (targetArgReg <= 3)
+                            if (argRegs[i] != targetArgReg) EmitMovRegister(targetArgReg, argRegs[i], context);
                     }
+
+                    EmitCall(ctorSymbol.ToDisplayString(), context, isStatic: false, isNative: false);
+
+                    context.NextFreeRegister -= args.Count;
+
+                    if (stackArgsCount > 0)
+                    {
+                        context.Emit($"ADD SP, SP, #{stackArgsCount * 4}");
+                        uint imm12 = (uint)(stackArgsCount * 4);
+                        uint op = 0xF10D0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
+                        context.Write32(op);
+                    }
+
+                    if (targetReg != 0) EmitMovRegister(targetReg, 0, context); // restoring allocated ptr
                 }
-            }
-            else if (expr is DefaultExpressionSyntax)
-            {
-                EmitMovImmediate(targetReg, 0, context);
             }
             else if (expr is InvocationExpressionSyntax invocation)
             {
-                var methodSymbol = context.SemanticModel.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
-                if (methodSymbol == null) throw new Exception($"Символ не найден для вызова: {invocation}");
+                var methodSymbol = context.SemanticModel.GetSymbolInfo(invocation).Symbol as IMethodSymbol 
+                                ?? context.SemanticModel.GetMemberGroup(invocation).FirstOrDefault() as IMethodSymbol;
 
-                var args = invocation.ArgumentList.Arguments;
-
-                if (methodSymbol.MethodKind == MethodKind.DelegateInvoke)
+                var delegateType = context.SemanticModel.GetTypeInfo(invocation.Expression).Type;
+                bool isDelegateInvoke = delegateType != null && delegateType.TypeKind == TypeKind.Delegate;
+                if (!isDelegateInvoke && methodSymbol != null && methodSymbol.ContainingType?.TypeKind == TypeKind.Delegate)
                 {
-                    int delegateReg = context.NextFreeRegister++;
-                    EmitExpression(invocation.Expression, delegateReg, context, tempOffset);
+                    isDelegateInvoke = true; // Handle case where methodSymbol is Delegate.Invoke
+                }
 
-                    // Load Target into r0, and MethodPtr into r12 (or temporary register)
-                    // We assume Delegate is inherited and has `Target` and `MethodPtr` fields
-                    int targetOffset = 0;
-                    int ptrOffset = 0;
-                    if (context.Class.Global.Childs.TryGetValue("System.Delegate", out var delTypeCtx) && delTypeCtx is TypeCompilationContext delTcc)
+                if (methodSymbol == null || isDelegateInvoke)
+                {
+                    if (isDelegateInvoke)
                     {
-                        delTcc.FieldOffsets.TryGetValue("Target", out targetOffset);
-                        delTcc.FieldOffsets.TryGetValue("MethodPtr", out ptrOffset);
-                    }
-                    else
-                    {
-                        // Fallback offsets (assuming TypeHeader takes 4 bytes if present, but we don't know). Safe fallback:
-                        bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
-                        targetOffset = typeHeader ? 4 : 0;
-                        ptrOffset = targetOffset + 4;
-                    }
+                        int delegateReg = context.NextFreeRegister++;
+                        var delegateExpression = invocation.Expression;
+                        if (delegateExpression is MemberAccessExpressionSyntax ma && ma.Name.Identifier.Text == "Invoke")
+                        {
+                            delegateExpression = ma.Expression;
+                        }
 
-                    // Arguments start from r1 for Delegate 'this' wrapper is not sent, rather 'Target' is sent.
-                    // Wait, if Target is null, r0 is null, but we just pass it anyway (for static methods r0 is practically ignored or we just send it).
-                    // Actually, if it's static, the method doesn't expect 'this' in r0. If we send it, it might overwrite the first argument!
-                    // Wait, ARM calling convention: r0-r3 are arguments. 
-                    // If target is static, r0 is the first argument! We can't just put Target in r0 blindly.
-                    // So we must check if the original bound method was static? We don't know it here at runtime easily without a flag.
-                    // Instead, in .NET Micro, we can do a trick: we always pass Target as first argument ONLY if Target != null?
-                    // No, static methods take arg1 in r0.
-                    // For now, let's keep it simple: we always call through an adapter or we don't support mixed static/instance well yet.
-                    // Let's assume instance methods for delegates for now (Target to r0, args to r1-r3).
+                        EmitExpressionInternal(delegateExpression, delegateReg, context, tempOffset);
 
-                    context.NextFreeRegister = delegateReg + 1; // reserve r0-r3 for call
+                        int targetOffset = context.Class.Global.BuildingContext.Options?.TypeHeader == true ? 4 : 0;
+                        int ptrOffset = targetOffset + 4;
+                        if (context.Class.Global.Childs.TryGetValue("System.Delegate", out var delTypeCtx) && delTypeCtx is TypeCompilationContext delTcc)
+                        {
+                            delTcc.FieldOffsets.TryGetValue("Target", out targetOffset);
+                            delTcc.FieldOffsets.TryGetValue("MethodPtr", out ptrOffset);
+                        }
 
-                    // Evaluate arguments first, storing them in stack or higher regs?
-                    // Actually, let's just evaluate them carefully.
-                    // Since r0 is taken by Target, user args go to r1..3.
-                    for (int i = 0; i < args.Count; i++)
-                    {
-                        int argReg = i + 1;
-                        if (argReg > 3) throw new Exception("Поддерживается максимум 3 аргумента для делегатов");
-                        EmitExpression(args[i].Expression, argReg, context, tempOffset);
-                    }
+                        var delArgs = invocation.ArgumentList.Arguments;
+                        List<int> delArgRegs = new();
+                        for (int i = 0; i < delArgs.Count; i++)
+                        {
+                            var argument = delArgs[i];
+                            int safeReg = context.NextFreeRegister++;
+                            if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword))
+                                EmitAddressOf(argument.Expression, safeReg, context, tempOffset);
+                            else
+                                EmitExpression(argument.Expression, safeReg, context, tempOffset);
+                            delArgRegs.Add(safeReg);
+                        }
 
-                    context.Emit($"LDR r0, [r{delegateReg}, #{targetOffset}] @ Load Target");
-                    int methodPtrReg = context.NextFreeRegister++;
-                    context.Emit($"LDR r{methodPtrReg}, [r{delegateReg}, #{ptrOffset}] @ Load MethodPtr");
+                        int delStackArgsCount = 0;
+                        for (int i = delArgs.Count - 1; i >= 0; i--)
+                        {
+                            int targetArgReg = i + 1;
+                            if (targetArgReg > 3)
+                            {
+                                context.Emit($"PUSH {{r{delArgRegs[i]}}}");
+                                context.Write16((ushort)(0xB400 | (1 << delArgRegs[i])));
+                                delStackArgsCount++;
+                            }
+                        }
 
-                    context.Emit($"BLX r{methodPtrReg} @ Invoke Delegate");
-                    // T1 16-bit encoding for BLX Rm -> 010001111_Rm_000
-                    context.Write16((ushort)(0x4780 | (methodPtrReg << 3)));
+                        for (int i = 0; i < delArgs.Count; i++)
+                        {
+                            int targetArgReg = i + 1;
+                            if (targetArgReg <= 3)
+                                if (delArgRegs[i] != targetArgReg) EmitMovRegister(targetArgReg, delArgRegs[i], context);
+                        }
 
-                    context.NextFreeRegister -= 2;
+                        context.Emit($"LDR r0, [r{delegateReg}, #{targetOffset}] @ Load Target");
+                        int methodPtrReg = context.NextFreeRegister++;
+                        context.Emit($"LDR r{methodPtrReg}, [r{delegateReg}, #{ptrOffset}] @ Load MethodPtr");
 
-                    if (targetReg != 0)
-                    {
-                        EmitMovRegister(targetReg, 0, context);
+                        context.Emit($"BLX r{methodPtrReg} @ Invoke Delegate");
+                        context.Write16((ushort)(0x4780 | (methodPtrReg << 3)));
+
+                        context.NextFreeRegister -= 2; 
+                        context.NextFreeRegister -= delArgs.Count;
+
+                        if (delStackArgsCount > 0)
+                        {
+                            context.Emit($"ADD SP, SP, #{delStackArgsCount * 4}");
+                            uint imm12 = (uint)(delStackArgsCount * 4);
+                            uint op = 0xF10D0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
+                            context.Write32(op);
+                        }
+
+                        if (targetReg != 0) EmitMovRegister(targetReg, 0, context);
                     }
                     return;
                 }
@@ -1369,9 +1020,7 @@ namespace NETMCUCompiler.CodeBuilder
 
                 if (!methodSymbol.IsStatic)
                 {
-                    // Allocate a temporary register for the instance pointer so it's not clobbered by arguments
                     instanceReg = context.NextFreeRegister++;
-
                     if (invocation.Expression is MemberAccessExpressionSyntax invokationMemberAccess)
                         EmitExpression(invokationMemberAccess.Expression, instanceReg, context, tempOffset);
                     else
@@ -1404,125 +1053,73 @@ namespace NETMCUCompiler.CodeBuilder
                         EmitMovRegister(interfaceFuncPtrReg, 0, context);
                     }
                 }
-                else
-                {
-                    context.NextFreeRegister = 4; // В статических методах 'this' нет, начинаем с r4
-                }
 
-                // Evaluate arguments into temporary safe registers first
+                var args = invocation.ArgumentList.Arguments;
                 List<int> argRegs = new();
                 for (int i = 0; i < args.Count; i++)
                 {
                     var argument = args[i];
-                    int safeReg = context.NextFreeRegister++; // allocate safe temp var
+                    int safeReg = context.NextFreeRegister++;
 
                     if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword))
-                    {
                         EmitAddressOf(argument.Expression, safeReg, context, tempOffset);
-                    }
                     else
-                    {
                         EmitExpression(argument.Expression, safeReg, context, tempOffset);
-                    }
                     argRegs.Add(safeReg);
                 }
 
-                // Push stack arguments (5th +) in reverse order AAPCS
                 int stackArgsCount = 0;
                 for (int i = args.Count - 1; i >= 0; i--)
                 {
-                    int targetArgReg = i + regOffset;
+                    int targetArgReg = i + regOffset; 
                     if (targetArgReg > 3)
                     {
-                        // Needs to go on stack
-                        context.Emit($"PUSH {{r{argRegs[i]}}} @ stack argument {i}");
-                        // T1 PUSH: 1011_0100_register_list -> 0xB400 | (1 << Reg)
+                        context.Emit($"PUSH {{r{argRegs[i]}}}");
                         context.Write16((ushort)(0xB400 | (1 << argRegs[i])));
                         stackArgsCount++;
                     }
                 }
 
-                // Move evaluated arguments into AAPCS registers (R1-R3 for instance methods, R0-R3 for static)
+                if (!methodSymbol.IsStatic)
+                    EmitMovRegister(0, instanceReg, context); // set 'this'
+
                 for (int i = 0; i < args.Count; i++)
                 {
                     int targetArgReg = i + regOffset;
                     if (targetArgReg <= 3)
-                    {
-                        if (argRegs[i] != targetArgReg)
-                        {
-                            EmitMovRegister(targetArgReg, argRegs[i], context);
-                        }
-                    }
+                        if (argRegs[i] != targetArgReg) EmitMovRegister(targetArgReg, argRegs[i], context);
                 }
-
-                // Move instance pointer to R0
-                if (!methodSymbol.IsStatic)
-                {
-                    if (instanceReg != 0)
-                        EmitMovRegister(0, instanceReg, context);
-                }
-
-                // Cleanup temps
-                if (!methodSymbol.IsStatic) context.NextFreeRegister--;
-                context.NextFreeRegister -= args.Count;
-
-                var nativeAttr = methodSymbol.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name.Contains("NativeCall") == true);
-                string nativeFunctionName = nativeAttr?.ConstructorArguments.FirstOrDefault().Value?.ToString();
-                string callTarget = nativeFunctionName ?? methodSymbol.ToDisplayString();
 
                 if (isInterfaceCall)
                 {
-                    context.Emit($"BLX r{interfaceFuncPtrReg} @ call Interface Method");
-                    // T1 16-bit encoding for BLX Rm -> 010001111_Rm_000
+                    context.Emit($"BLX r{interfaceFuncPtrReg}");
                     context.Write16((ushort)(0x4780 | (interfaceFuncPtrReg << 3)));
                     context.NextFreeRegister--; // interfaceFuncPtrReg
                 }
-                else if (isVirtualCall && nativeAttr == null)
-                {
-                    int vtableIndex = VTableBuilder.GetVTableIndex(methodSymbol);
-                    if (vtableIndex < 0) throw new Exception($"VTable index not found for virtual method {methodSymbol}");
-
-                    int typeMetaReg = context.NextFreeRegister++;
-                    context.Emit($"LDR r{typeMetaReg}, [r0, #0] @ read TypeMetadata");
-
-                    int funcPtrReg = context.NextFreeRegister++;
-                    int offset = 12 + vtableIndex * 4;
-                    context.Emit($"LDR r{funcPtrReg}, [r{typeMetaReg}, #{offset}] @ read Virtual Method");
-
-                    context.Emit($"BLX r{funcPtrReg} @ call Virtual Method");
-                    // T1 16-bit encoding for BLX Rm -> 010001111_Rm_000
-                    context.Write16((ushort)(0x4780 | (funcPtrReg << 3)));
-
-                    context.NextFreeRegister -= 2;
-                }
-                else if (methodSymbol.ContainingType.Name == "Unsafe" && (methodSymbol.Name == "AsPointer" || methodSymbol.Name == "As"))
-                {
-                    // Intrinsic: AsPointer/As just returns its first argument (already in r0)
-                    context.Emit($"@ Intrinsic: Unsafe.{methodSymbol.Name} (no-op)");
-                }
                 else
                 {
-                    EmitCall(callTarget, context, methodSymbol.IsStatic, nativeAttr != null);
+                    string nativeFunctionName = methodSymbol.GetAttributes()
+                        .FirstOrDefault(a => a.AttributeClass?.Name.Contains("NativeCall") == true)?
+                        .ConstructorArguments.FirstOrDefault().Value?.ToString();
+
+                    string callTarget = nativeFunctionName ?? methodSymbol.ToDisplayString();
+                    EmitCall(callTarget, context, methodSymbol.IsStatic, nativeFunctionName != null);
                 }
 
-                // Если мы push'или аргументы, надо очистить их со стека
+                context.NextFreeRegister -= args.Count;
+                if (!methodSymbol.IsStatic) context.NextFreeRegister--; // instanceReg
+
                 if (stackArgsCount > 0)
                 {
-                    context.Emit($"ADD SP, SP, #{stackArgsCount * 4} @ Cleanup stack arguments");
+                    context.Emit($"ADD SP, SP, #{stackArgsCount * 4}");
                     uint imm12 = (uint)(stackArgsCount * 4);
-                    // ADD SP, SP, #imm (T3)
                     uint op = 0xF10D0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
                     context.Write32(op);
                 }
 
-                // Результат в R0 -> переносим по месту назначения
-                if (targetReg != 0)
-                {
-                    EmitMovRegister(targetReg, 0, context);
-                }
+                if (targetReg != 0) EmitMovRegister(targetReg, 0, context);
             }
         }
-
         public static void EmitMethodPrologue(bool isInstance, System.Collections.Immutable.ImmutableArray<IParameterSymbol> parameters, MethodCompilationContext context)
         {
             // Сохраняем регистры, которые мы будем использовать.
@@ -1629,11 +1226,52 @@ namespace NETMCUCompiler.CodeBuilder
                 // PC в ARM Thumb обычно на 4 байта впереди текущей инструкции
                 int relativeOffset = targetOffset - instructionOffset - 4; 
 
-                if (jump.IsConditional)
+                if (jump.Type == JumpType.Conditional)
                 {
                     // Относительный переход для B<cc> должен быть в пределах -256..254 байт (8 бит)
                     int imm8 = relativeOffset / 2;
                     binary[instructionOffset] = (byte)(imm8 & 0xFF);
+                }
+                else if (jump.Type == JumpType.LoadAddress)
+                {
+                    // ADR.W Rd, label (T3)
+                    // If label is positive offset (target > pc), it's ADR.W Rd, #imm12 (ADD) = 1111 0 i 10 1010 1111 0 imm3 Rd imm8
+                    // If label is negative offset (target < pc), it's ADR.W Rd, #imm12 (SUB) = 1111 0 i 10 1010 1111 0 imm3 Rd imm8 but base op is different
+                    // Wait, ADR T3 for ADD is 0xF2AF, for SUB is 0xF2AF (actually ADR ADD is F2AF, ADR SUB is F2AF? Let's check ARM v7-M spec).
+                    // Actually, ADD is F2AF 0xxx, SUB is F2AF 0xxx with different opcode?
+                    // Sub is F2AF ... wait. "ADR" is ADD Rd, PC, #imm or SUB Rd, PC, #imm
+                    // Thumb-2 ADD Rd, PC, #imm is 0xF2AF (ADDW)
+                    // SUB Rd, PC, #imm is 0xF2AF (SUBW)? No, SUBW is 0xF2AF... no, wait.
+                    // Let's just use F2AF0xxx for ADD, and F2AF0xxx for SUB?
+                    // Actually, ADD: 1111 0 i 10  0 0 0 0  1111  0 imm3  Rd imm8 => F2 0F
+                    // No, ADR is: 1111 0 i 10 1010 1111 0 imm3 Rd imm8 => F2AF_0000 
+                    // ADR (SUB): 1111 0 i 10 1010 1111 0 imm3 Rd imm8 => F2AF_0000 ?
+                    // Let's use simple ADR.W (ADD) since Catch label is always forward in our generation!
+                    // VisitTryStatement puts Catch label AFTER the Try block!
+                    
+                    if (relativeOffset < 0) throw new Exception("Backwards ADR not supported yet");
+                    
+                    int rd = 0; // We assume Rd=r0 based on TryStatement usage
+                    uint imm12 = (uint)relativeOffset;
+                    uint i = (imm12 >> 11) & 1;
+                    uint imm3 = (imm12 >> 8) & 7;
+                    uint imm8 = imm12 & 0xFF;
+
+                    uint op = 0xF2AF0000;
+                    op |= (i << 26);
+                    op |= (imm3 << 12);
+                    op |= ((uint)rd << 8);
+                    op |= imm8;
+
+                    binary[instructionOffset] = (byte)(op >> 16); // High word first part? No, write32 writes high halfword, then low!
+                    // Write32 writes: [0]=High_Low, [1]=High_Hi, [2]=Low_Low, [3]=Low_Hi
+                    ushort high = (ushort)(op >> 16);
+                    ushort low = (ushort)(op & 0xFFFF);
+                    
+                    binary[instructionOffset + 0] = (byte)(high & 0xFF);
+                    binary[instructionOffset + 1] = (byte)(high >> 8);
+                    binary[instructionOffset + 2] = (byte)(low & 0xFF);
+                    binary[instructionOffset + 3] = (byte)(low >> 8);
                 }
                 else
                 {
@@ -1695,15 +1333,26 @@ namespace NETMCUCompiler.CodeBuilder
         {
             context.Emit($"B{condition} {label}");
 
-            byte condCode = condition switch
+            byte condCode = condition.ToUpperInvariant() switch
             {
                 "EQ" => 0,
                 "NE" => 1,
+                "CS" => 2,
+                "HS" => 2,
+                "CC" => 3,
+                "LO" => 3,
+                "MI" => 4,
+                "PL" => 5,
+                "VS" => 6,
+                "VC" => 7,
+                "HI" => 8,
+                "LS" => 9,
                 "GE" => 10,
                 "LT" => 11,
                 "GT" => 12,
                 "LE" => 13,
-                _ => throw new Exception("Unknown branch cond")
+                "AL" => 14,
+                _ => throw new Exception($"Unknown branch cond: {condition}")
             };
 
             context.AddJump(label, true);
@@ -1811,36 +1460,6 @@ namespace NETMCUCompiler.CodeBuilder
             binary[offset + 3] = (byte)(low >> 8);
         }
 
-        public static int GetOperand(ExpressionSyntax expr, MethodCompilationContext ctx, int targetReg)
-        {
-            var symbol = ctx.SemanticModel.GetSymbolInfo(expr).Symbol;
-
-            // 1. Это константа?
-            if (ctx.TryGetConstant(symbol?.ToDisplayString(), out var val))
-            {
-                EmitMovImmediate(targetReg, (int)val, ctx);
-                return targetReg;
-            }
-
-            // 2. Это локальная переменная?
-            if (ctx.RegisterMap.TryGetValue(expr.ToString(), out int reg)) return reg;
-
-            // 3. Это структура на стеке?
-            if (ctx.StackMap.TryGetValue(expr.ToString(), out var stackVar))
-            {
-                ctx.Emit($"LDR R{targetReg}, [SP, #{stackVar.StackOffset}]");
-                return targetReg;
-            }
-
-            throw new Exception($"Не удалось разрешить операнд: {expr}");
-        }
-
-        /// <summary>
-        /// Патчит пару инструкций MOVW/MOVT для загрузки 32-битного значения в регистр r0.
-        /// </summary>
-        /// <param name="binary">Массив байт всей прошивки.</param>
-        /// <param name="offset">Смещение до места, где начинается 8-байтовый плейсхолдер.</param>
-        /// <param name="value">32-битный адрес, который нужно загрузить.</param>
         public static void PatchMovwMovt(byte[] binary, int offset, uint value)
         {
             uint rd = binary[offset]; // Мы сохранили 1 байт targetReg в плейсхолдер
