@@ -9,7 +9,8 @@ namespace NETMCUCompiler
         STLinkCLI,
         STFlash,
         OpenOCD,
-        STM32CubeProgrammer
+        STM32CubeProgrammer,
+        DfuUtil
     }
 
     public class FirmwareFlasher
@@ -44,7 +45,12 @@ namespace NETMCUCompiler
                     // For f401 by default, adjusting config might be needed as target/stm32f4x.cfg
                     args = $"-f interface/stlink.cfg -f target/stm32f4x.cfg -c \"program \\\"{binFilePath}\\\" 0x{address:X8} verify reset exit\"";
                     break;
-                    
+
+                case ProgrammerType.DfuUtil:
+                    tool = "dfu-util";
+                    args = $"-d 0483:df11 -a 0 -s 0x{address:X8}:leave -D \"{binFilePath}\"";
+                    break;
+
                 case ProgrammerType.STLinkCLI:
                     tool = "ST-LINK_CLI.exe";
                     args = $"-c SWD -p \"{binFilePath}\" 0x{address:X8} -V -Rst";

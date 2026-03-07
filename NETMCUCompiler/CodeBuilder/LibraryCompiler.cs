@@ -25,7 +25,14 @@ namespace NETMCUCompiler.CodeBuilder
             while (current != null)
             {
                 if (current is BaseTypeDeclarationSyntax classDecl) // class, struct, enum
-                    names.Push(classDecl.Identifier.Text);
+                {
+                    string name = classDecl.Identifier.Text;
+                    if (classDecl is TypeDeclarationSyntax typeDecl && typeDecl.TypeParameterList != null)
+                    {
+                        name += "`" + typeDecl.TypeParameterList.Parameters.Count;
+                    }
+                    names.Push(name);
+                }
                 else if (current is MethodDeclarationSyntax methodDecl) // method
                     names.Push(methodDecl.Identifier.Text);
                 else if (current is LocalFunctionStatementSyntax localFuncDecl) // local function
@@ -56,11 +63,12 @@ namespace NETMCUCompiler.CodeBuilder
 
         public static void CompileProject(Compilation compilation, CompilationContext context)
         {
-            //IEnumerable<MethodDeclarationSyntax> GetInnerMethods(MethodDeclarationSyntax method)
-            //{ 
-            //method.Body.
-            //}
-
+            // Register fundamental types
+            var stringType = compilation.GetSpecialType(SpecialType.System_String);
+            if (stringType != null && stringType.TypeKind != TypeKind.Error)
+            {
+                context.RegisterTypeLiteral(stringType);
+            }
 
             var items = compilation.SyntaxTrees.Select(tree =>
             {

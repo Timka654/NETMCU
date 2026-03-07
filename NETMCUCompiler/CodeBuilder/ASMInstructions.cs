@@ -1478,6 +1478,11 @@ namespace NETMCUCompiler.CodeBuilder
 
                     context.NextFreeRegister -= 2;
                 }
+                else if (methodSymbol.ContainingType.Name == "Unsafe" && (methodSymbol.Name == "AsPointer" || methodSymbol.Name == "As"))
+                {
+                    // Intrinsic: AsPointer/As just returns its first argument (already in r0)
+                    context.Emit($"@ Intrinsic: Unsafe.{methodSymbol.Name} (no-op)");
+                }
                 else
                 {
                     EmitCall(callTarget, context, methodSymbol.IsStatic, nativeAttr != null);
@@ -1673,17 +1678,12 @@ namespace NETMCUCompiler.CodeBuilder
 
         public static void EmitCall(string name, MethodCompilationContext context, bool isStatic, bool isNative = false)
         {
-            if (isNative)
-            {
-                // Вызов нативной функции (например, из встроенной библиотеки)
-                context.Emit($"BL {name}");
-                context.Write16((ushort)0xF000);
-            }
-            else
-            {
-                // Вызов функции (рекурсивный или внешней)
-                context.Emit($"BL {name}");
-            }
+            context.Emit($"BL {name}");
+            context.AddRelocation(name, isStatic, isNative);
+            // Thumb-2 BL instruction takes 4 bytes (two 16-bit halfwords)
+            // Placeholder: 0xF000 0xD000 (which is basically a branch to self or 0 offset, will be patched later)
+            context.Write16((ushort)0xF000);
+            context.Write16((ushort)0xD000);
         }
 
         public static void EmitReturn(MethodCompilationContext context)

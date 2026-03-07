@@ -2,7 +2,7 @@
 	"Name": "STM32 Core for NETMCU",
 	"ImageName": "final-mcu",
 	"State": "Develop",
-	"PublishDate": "2026-02-09T22:48:00",
+	"PublishDate": "2026-03-07T18:56:00",
 	"Parameters":{
 		"ProcessingPathes": [
 			"linker.ld"

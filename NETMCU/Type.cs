@@ -9,5 +9,13 @@ namespace System
         {
             return null; // Stub
         }
+
+        public static bool operator ==(Type left, Type right)
+        {
+            if (ReferenceEquals(left, right)) return true;
+            return false; // Stub
+        }
+
+        public static bool operator !=(Type left, Type right) => !(left == right);
     }
 }

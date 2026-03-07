@@ -212,6 +212,8 @@ namespace NETMCUCompiler
 
             Console.WriteLine($"Compile {Path} ...");
 
+            Compilation = CodeBuilder.AOTGenericExpander.Expand(Compilation);
+
             LibraryCompiler.CompileProject(Compilation, compilationContext);
 
             DumpMeta();
@@ -227,15 +229,13 @@ namespace NETMCUCompiler
         }
 
 
-        private byte[] BuildRoDataSection(out Dictionary<string, uint> offsets, out List<(int OffsetInSection, string TypeLiteral)> typePatches)
+        private byte[] BuildRoDataSection(out Dictionary<string, uint> offsets, out List<(int OffsetInSection, string TargetSymbol)> rodataPatches)
         {
             offsets = new Dictionary<string, uint>();
-            typePatches = new List<(int, string)>();
+            rodataPatches = new List<(int OffsetInSection, string TargetSymbol)>();
+
             using var ms = new MemoryStream();
             using var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
-
-            var stringType = compilationContext.SemanticModel.Compilation.GetTypeByMetadataName("System.String");
-            string stringTypeId = stringType != null ? compilationContext.RegisterTypeLiteral(stringType) : null;
 
             // Используем StringLiterals из главного контекста компиляции
             foreach (var literal in compilationContext.StringLiterals.OrderBy(l => l.Key)) // Сортируем для стабильной сборки
@@ -249,17 +249,27 @@ namespace NETMCUCompiler
                 // Сохраняем смещение для этого символа
                 offsets[literal.Key] = (uint)ms.Position;
 
-                if (Options.TypeHeader && stringTypeId != null)
+                if (Options?.TypeHeader == true)
                 {
-                    typePatches.Add(((int)ms.Position, stringTypeId));
-                    writer.Write((uint)0); // Placeholder for TypeHeader
-                    writer.Write((uint)literal.Value.Length); // Length field
-                }
+                    // 1. Type Metadata Pointer
+                    rodataPatches.Add(((int)ms.Position, "__type_literal_string"));
+                    writer.Write((uint)0); // Placeholder
 
-                // Записываем строку в кодировке UTF-8 с нулевым терминатором
-                var bytes = Encoding.UTF8.GetBytes(literal.Value);
-                writer.Write(bytes);
-                writer.Write((byte)0); // Нулевой терминатор
+                    // 2. Length (in chars)
+                    writer.Write((uint)literal.Value.Length);
+
+                    // 3. UTF-16 Chars
+                    var bytes = Encoding.Unicode.GetBytes(literal.Value); // UTF-16 LE
+                    writer.Write(bytes);
+                    writer.Write((short)0); // 16-bit null terminator for safety
+                }
+                else
+                {
+                    writer.Write((uint)literal.Value.Length); // Add a 4-byte length even without header for basic operations
+                    var bytes = Encoding.Unicode.GetBytes(literal.Value);
+                    writer.Write(bytes);
+                    writer.Write((short)0); // Null terminator
+                }
             }
 
             return ms.ToArray();
@@ -456,25 +466,16 @@ namespace NETMCUCompiler
 
                 contextOffsets[ctx.compilationContext!] = startOffset;
             }
-            // --- СОЗДАНИЕ И ДОБАВЛЕНИЕ СЕКЦИИ .RODATA ---
+            // --- СОЗДАНИЕ СЕКЦИИ .RODATA ---
+            var roDataBytes = BuildRoDataSection(out var roDataOffsets, out var rodataPatches);
 
-            // 1. Создаем бинарный блок с данными и получаем смещения внутри него
-            var roDataBytes = BuildRoDataSection(out var roDataOffsets, out var roDataTypePatches);
+            // Выравниваем текущую позицию в прошивке
+            while (finalImage.Position % 4 != 0) finalImage.WriteByte(0);
 
-            // 2. Выравниваем текущую позицию в прошивке
-            while (finalImage.Position % 4 != 0)
-            {
-                finalImage.WriteByte(0);
-            }
-
-            int roDataBinOffset = (int)finalImage.Position;
-            // 3. Запоминаем абсолютный адрес начала секции .rodata
+            // Запоминаем абсолютный адрес начала секции .rodata
             uint roDataSectionAddr = flashBaseAddress + (uint)finalImage.Position;
 
-            // 4. Записываем саму секцию в прошивку
-            finalImage.Write(roDataBytes, 0, roDataBytes.Length);
-
-            // 5. Добавляем символы строк в глобальную таблицу символов
+            // Добавляем символы строк в глобальную таблицу символов
             foreach (var entry in roDataOffsets)
             {
                 var symbolName = entry.Key;
@@ -486,13 +487,15 @@ namespace NETMCUCompiler
                 }
             }
 
-            // --- СОЗДАНИЕ И ДОБАВЛЕНИЕ СЕКЦИИ .TYPEDATA ---
+            // --- СОЗДАНИЕ СЕКЦИИ .TYPEDATA ---
             List<(int OffsetInSection, string TargetMethod)> vtablePatches = new();
             var typeDataBytes = BuildTypeDataSection(out var typeDataOffsets, globalSymbolTable, vtablePatches);
 
-            uint typeDataSectionAddr = flashBaseAddress + (uint)finalImage.Position + (uint)((4 - finalImage.Position % 4) % 4);
+            // Оцениваем адрес typeData после rodata (с правильным выравниванием)
+            uint projectedTypeDataOff = (uint)finalImage.Position + (uint)roDataBytes.Length;
+            uint typeDataSectionAddr = flashBaseAddress + projectedTypeDataOff + ((4 - projectedTypeDataOff % 4) % 4);
 
-            // Add typeData symbols to global table first, so vtable patches can find type references
+            // Add typeData symbols to global table
             foreach (var entry in typeDataOffsets)
             {
                 var symbolName = entry.Key;
@@ -504,12 +507,29 @@ namespace NETMCUCompiler
                 }
             }
 
+            // Patch RoData Pointers (like TypeHeader for Strings)
+            foreach (var patch in rodataPatches)
+            {
+                if (globalSymbolTable.TryGetValue(patch.TargetSymbol, out uint symAddr))
+                {
+                    roDataBytes[patch.OffsetInSection]     = (byte)(symAddr & 0xFF);
+                    roDataBytes[patch.OffsetInSection + 1] = (byte)((symAddr >> 8) & 0xFF);
+                    roDataBytes[patch.OffsetInSection + 2] = (byte)((symAddr >> 16) & 0xFF);
+                    roDataBytes[patch.OffsetInSection + 3] = (byte)((symAddr >> 24) & 0xFF);
+                }
+            }
+
+            // Записываем пропатченную секцию rodata
+            finalImage.Write(roDataBytes, 0, roDataBytes.Length);
+
+            // Выравниваем перед TypeData
+            while (finalImage.Position % 4 != 0) finalImage.WriteByte(0);
+
             // Patch vtable pointers within typeDataBytes
             foreach(var patch in vtablePatches)
             {
                 if (globalSymbolTable.TryGetValue(patch.TargetMethod, out uint methAddr))
                 {
-                    // Write 4 bytes
                     typeDataBytes[patch.OffsetInSection]     = (byte)(methAddr & 0xFF);
                     typeDataBytes[patch.OffsetInSection + 1] = (byte)((methAddr >> 8) & 0xFF);
                     typeDataBytes[patch.OffsetInSection + 2] = (byte)((methAddr >> 16) & 0xFF);
@@ -521,27 +541,10 @@ namespace NETMCUCompiler
                 }
             }
 
-            while (finalImage.Position % 4 != 0) finalImage.WriteByte(0);
+            // Записываем секцию TypeData
             finalImage.Write(typeDataBytes, 0, typeDataBytes.Length);
 
             byte[] binary = finalImage.ToArray();
-
-            // Patch String literal TypeHeaders
-            foreach (var patch in roDataTypePatches)
-            {
-                if (globalSymbolTable.TryGetValue(patch.TypeLiteral, out uint typeAddr))
-                {
-                    int pos = roDataBinOffset + patch.OffsetInSection;
-                    binary[pos] = (byte)(typeAddr & 0xFF);
-                    binary[pos + 1] = (byte)((typeAddr >> 8) & 0xFF);
-                    binary[pos + 2] = (byte)((typeAddr >> 16) & 0xFF);
-                    binary[pos + 3] = (byte)((typeAddr >> 24) & 0xFF);
-                }
-                else
-                {
-                    Console.WriteLine($"[WARNING] Reference {patch.TypeLiteral} not found in global symbol table inside RoData patch. Filling with 0.");
-                }
-            }
 
 
             // 2. Добавляем методы наших библиотек
@@ -580,7 +583,13 @@ namespace NETMCUCompiler
                 string symbolName = inputGroup.Key;
 
                 if (!globalSymbolTable.TryGetValue(symbolName, out uint targetAddr))
+                {
+                    Console.WriteLine($"[DEBUG] Available global symbols related to type literals:");
+                    foreach(var k in globalSymbolTable.Keys.Where(x => x.StartsWith("__type_literal_")))
+                        Console.WriteLine($"  {k}");
+
                     throw new Exception($"Undefined data reference: {symbolName}");
+                }
 
                 foreach (var instrGlobalOffset in inputGroup.Value)
                 {

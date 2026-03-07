@@ -28,6 +28,7 @@ namespace NETMCUCompiler
             if (args.Any(a => a.Contains("openocd"))) progType = ProgrammerType.OpenOCD;
             else if (args.Any(a => a.Contains("cubeprogrammer"))) progType = ProgrammerType.STM32CubeProgrammer;
             else if (args.Any(a => a.Contains("stlinkcli"))) progType = ProgrammerType.STLinkCLI;
+            else if (args.Any(a => a.Contains("dfu"))) progType = ProgrammerType.DfuUtil;
 
             // 1. Инициализация MSBuild (нужно вызвать один раз при старте)
             if (!MSBuildLocator.IsRegistered)

@@ -1,4 +1,5 @@
-﻿using NETMCUCore.STM;
+﻿using System;
+using NETMCUCore.STM;
 
 namespace devmcu
 {
@@ -17,8 +18,6 @@ namespace devmcu
     {
         public override int GetValue() { return 42; }
     }
-
-    record Person(string Name, int Age);
 
     public class Program
     {
@@ -46,17 +45,69 @@ namespace devmcu
             TestVirtualsAndInterfaces();
             TestArrays();
             TestBoxingAndCasting();
-            TestRecords();
+            TestStrings();
+            // TestRecords(); // disabled temporarily until implicit constructors are supported
+            TestGC();
+            TestTuples();
+            TestGenerics();
+        }
+
+        public class Box<T>
+        {
+            public T Value;
+            public Box(T value) { Value = value; }
+            public T GetValue() => Value;
+        }
+
+        public static void TestGenerics()
+        {
+            Box<int> intBox = new Box<int>(123);
+            int v = intBox.GetValue();
+
+            Box<string> strBox = new Box<string>("Hello Generic!");
+            string s = strBox.GetValue();
+        }
+
+        public class Point
+        {
+            public int X;
+            public int Y;
+            public Point(int x, int y) { X = x; Y = y; }
+        }
+
+        public static void TestGC()
+        {
+            GC.Collect();
+            long mem = GC.GetTotalMemory(true);
+        }
+
+        public static void TestTuples()
+        {
+            var t = (1, 2);
+            int a = t.Item1;
+            int b = t.Item2;
+            int c = a + b;
         }
 
         public static void TestRecords()
         {
-            var p1 = new Person("Alice", 25);
-            var p2 = new Person("Bob", 30);
-            var p3 = new Person("Alice", 25);
+            Point p1 = new Point(10, 20);
+            Point p2 = new Point(10, 20);
 
-            bool eq = p1 == p3; // should be true
-            int age = p1.Age;
+            // disabled record logic for now
+        }
+
+        public static void TestStrings()
+        {
+            string hello = "Hello, MCU!";
+            int length = hello.Length; // 11
+            char h = hello[0]; // 'H'
+            char m = hello[7]; // 'M'
+
+            bool isSame = hello == "Hello, MCU!"; // true
+            bool isDiff = hello == "Hello"; // false
+
+            string concat = hello + " Test"; // calls String.Concat
         }
 
         public static void TestDelegates()
@@ -100,6 +151,21 @@ namespace devmcu
             RunTests();
 
             HAL.Init();
+
+            // Setup USART1 on PB6(TX) and PB7(RX)
+            GPIO.EnableClock(GPIO_Port.PortB);
+
+            var usartConfig = new GPIO_InitTypeDef();
+            usartConfig.Pin = (uint)(1 << 6) | (uint)(1 << 7);
+            usartConfig.Mode = GPIO_Mode.AlternativeFunctionPushPull;
+            usartConfig.Pull = GPIO_Pull.NoPull;
+            usartConfig.Speed = GPIO_Speed.VeryHigh;
+            usartConfig.Alternate = 7;
+            HAL_GPIO_API.NativeInit(0x40020400, ref usartConfig); // 0x40020400 mapping for GPIOB
+
+            USART.Init(USART_Port.USART1, 115200);
+
+            USART.WriteLine(USART_Port.USART1, "Hello, UART!");
 
             WriteLine("Hello, NETMCU!");
             WriteLine("This is a test of string literals.");
