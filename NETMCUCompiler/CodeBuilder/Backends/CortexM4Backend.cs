@@ -474,5 +474,19 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         {
             ASMInstructions.EmitExpression(node, 0, context);
         }
+
+        public override void EmitJump(MethodCompilationContext context, string label) => ASMInstructions.EmitJump(label, context);
+        public override void EmitLogicalCondition(MethodCompilationContext context, ExpressionSyntax condition, string trueLabel, string falseLabel) => ASMInstructions.EmitLogicalCondition(condition, trueLabel, falseLabel, context);
+        public override void EmitExpressionValue(MethodCompilationContext context, ExpressionSyntax expr, int targetReg) => ASMInstructions.EmitExpression(expr, targetReg, context);
+        public override void EmitCall(MethodCompilationContext context, string name, bool isStatic, bool isNative = false) => ASMInstructions.EmitCall(name, context, isStatic, isNative);
+        public override void EmitMovImmediate(MethodCompilationContext context, int reg, int val) => ASMInstructions.EmitMovImmediate(reg, val, context);
+        public override void EmitCompare(MethodCompilationContext context, int left, int right) => ASMInstructions.EmitCompare(left, right, context);
+        public override void EmitBranch(MethodCompilationContext context, string label, string condition) => ASMInstructions.EmitBranch(label, condition, context);
+        public override void EmitMovRegister(MethodCompilationContext context, int target, int source) => ASMInstructions.EmitMovRegister(target, source, context);
+        public override void EmitMemoryAccess(MethodCompilationContext context, bool isLoad, int targetReg, int baseReg, int offset) => ASMInstructions.EmitMemoryAccess(isLoad, targetReg, baseReg, offset, context);
+        public override void EmitArithmeticOp(MethodCompilationContext context, SyntaxKind op, int target, int left, int right) => ASMInstructions.EmitArithmeticOp(op, target, left, right, context);
+        public override void EmitOpWithImmediate(MethodCompilationContext context, SyntaxKind op, int target, int left, int value) => ASMInstructions.EmitOpWithImmediate(op, target, left, value, context);
+        public override void EmitAddressOf(MethodCompilationContext context, ExpressionSyntax expr, int targetReg, int tempOffset = 0) => ASMInstructions.EmitAddressOf(expr, targetReg, context, tempOffset);
+        public override void EmitCompareImmediate(MethodCompilationContext context, int reg, int imm) => ASMInstructions.EmitCompareImmediate(reg, imm, context);
     }
 }

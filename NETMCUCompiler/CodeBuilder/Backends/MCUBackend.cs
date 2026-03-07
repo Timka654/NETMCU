@@ -364,5 +364,19 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         public abstract void GenerateIdentifierName(MethodCompilationContext context, IdentifierNameSyntax node);
 
         public abstract void GenerateInvocationExpression(MethodCompilationContext context, InvocationExpressionSyntax node);
+
+        public abstract void EmitJump(MethodCompilationContext context, string label);
+        public abstract void EmitLogicalCondition(MethodCompilationContext context, ExpressionSyntax condition, string trueLabel, string falseLabel);
+        public abstract void EmitExpressionValue(MethodCompilationContext context, ExpressionSyntax expr, int targetReg);
+        public abstract void EmitCall(MethodCompilationContext context, string name, bool isStatic, bool isNative = false);
+        public abstract void EmitMovImmediate(MethodCompilationContext context, int reg, int val);
+        public abstract void EmitCompare(MethodCompilationContext context, int left, int right);
+        public abstract void EmitBranch(MethodCompilationContext context, string label, string condition);
+        public abstract void EmitMovRegister(MethodCompilationContext context, int target, int source);
+        public abstract void EmitMemoryAccess(MethodCompilationContext context, bool isLoad, int targetReg, int baseReg, int offset);
+        public abstract void EmitArithmeticOp(MethodCompilationContext context, SyntaxKind op, int target, int left, int right);
+        public abstract void EmitOpWithImmediate(MethodCompilationContext context, SyntaxKind op, int target, int left, int value);
+        public abstract void EmitAddressOf(MethodCompilationContext context, ExpressionSyntax expr, int targetReg, int tempOffset = 0);
+        public abstract void EmitCompareImmediate(MethodCompilationContext context, int reg, int imm);
     }
 }
