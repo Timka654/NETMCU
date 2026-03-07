@@ -1,4 +1,4 @@
-﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System;
@@ -100,7 +100,7 @@ namespace NETMCUCompiler.CodeBuilder
             _loopContexts.Push((endLabel, incLabel));
 
             // Метка начала
-            context.Asm.AppendLine($"{startLabel}:");
+            context.MarkLabel(startLabel);
 
             // 2. Условие
             if (node.Condition != null)
@@ -112,7 +112,7 @@ namespace NETMCUCompiler.CodeBuilder
             Visit(node.Statement);
 
             // Метка инкремента (сюда будет прыгать continue, если мы его реализуем)
-            context.Asm.AppendLine($"{incLabel}:");
+            context.MarkLabel(incLabel);
 
             // 4. Инкремент
             foreach (var incrementor in node.Incrementors)
@@ -124,7 +124,7 @@ namespace NETMCUCompiler.CodeBuilder
             ASMInstructions.EmitJump(startLabel, context);
 
             // Метка выхода
-            context.Asm.AppendLine($"{endLabel}:");
+            context.MarkLabel(endLabel);
 
             _loopContexts.Pop();
         }
@@ -160,12 +160,15 @@ namespace NETMCUCompiler.CodeBuilder
 
             if (isArray)
             {
-                // Для массива длинна лежит в памяти (пока заглушка, пусть размер задается 0 если не найдено)
-                // Формат NETMCU: например, длина перед массивом или как передается?
-                // Пока мы жестко задаем константу или загружаем из структуры массивов (предположим -4 от ptr)
-                // Сделаем условный костыль - пока что длина вычисляется как 100, либо ждем правильной реализации структур массивов.
-                context.Emit($"@ TODO: Реализовать чтение Length для массивов. Временно берем заглушку.");
-                ASMInstructions.EmitMovImmediate(lengthReg, 10, context); // Fake length
+                // Вычитаем 4 из указателя, чтобы прочитать Length
+                int fourReg = context.NextFreeRegister++;
+                ASMInstructions.EmitMovImmediate(fourReg, 4, context);
+
+                int lenAddrReg = context.NextFreeRegister++;
+                ASMInstructions.EmitArithmeticOp(SyntaxKind.SubtractExpression, lenAddrReg, collectionReg, fourReg, context);
+                context.Emit($"LDR r{lengthReg}, [r{lenAddrReg}, #0] @ Read array length");
+
+                context.NextFreeRegister -= 2;
             }
             else
             {
@@ -173,7 +176,7 @@ namespace NETMCUCompiler.CodeBuilder
                 context.Emit($"@ TODO: IEnumerable foreach не реализован");
             }
 
-            context.Asm.AppendLine($"{startLabel}:");
+            context.MarkLabel(startLabel);
 
             // Условие: index < length
             ASMInstructions.EmitCompare(indexReg, lengthReg, context);
@@ -203,14 +206,14 @@ namespace NETMCUCompiler.CodeBuilder
             // Тело
             Visit(node.Statement);
 
-            context.Asm.AppendLine($"{incLabel}:");
+            context.MarkLabel(incLabel);
 
             // ++index
             ASMInstructions.EmitOpWithImmediate(SyntaxKind.AddExpression, indexReg, indexReg, 1, context);
 
             ASMInstructions.EmitJump(startLabel, context);
 
-            context.Asm.AppendLine($"{endLabel}:");
+            context.MarkLabel(endLabel);
 
             _loopContexts.Pop();
 
@@ -236,7 +239,7 @@ namespace NETMCUCompiler.CodeBuilder
             context.Emit($"b {endLabel}");
 
             // Сам функция-обработчик catch (вызывается из throw, не раскручивая стек локальных переменных)
-            context.Asm.AppendLine($"{catchLabel}:");
+            context.MarkLabel(catchLabel);
             context.Emit("push {lr}");
 
             // Снимаем себя из стека обработчиков, чтобы следующий throw полетел выше
@@ -252,7 +255,7 @@ namespace NETMCUCompiler.CodeBuilder
             // Возврат в throw! (как и просил пользователь, без сложной раскрутки)
             context.Emit("pop {pc}");
 
-            context.Asm.AppendLine($"{endLabel}:");
+            context.MarkLabel(endLabel);
 
             if (node.Finally != null)
             {
@@ -288,7 +291,7 @@ namespace NETMCUCompiler.CodeBuilder
             _loopContexts.Push((endLabel, startLabel));
 
             // Метка начала: сюда будем прыгать для каждой итерации
-            context.Asm.AppendLine($"{startLabel}:");
+            context.MarkLabel(startLabel);
 
             // 1. Вычисляем условие. 
             // Если оно ложно (false) — прыгаем сразу на выход (endLabel)
@@ -302,7 +305,7 @@ namespace NETMCUCompiler.CodeBuilder
             ASMInstructions.EmitJump(startLabel, context);
 
             // Метка выхода
-            context.Asm.AppendLine($"{endLabel}:");
+            context.MarkLabel(endLabel);
 
             _loopContexts.Pop();
         }
@@ -315,16 +318,16 @@ namespace NETMCUCompiler.CodeBuilder
 
             _loopContexts.Push((endLabel, condLabel));
 
-            context.Asm.AppendLine($"{startLabel}:");
+            context.MarkLabel(startLabel);
 
             Visit(node.Statement);
 
-            context.Asm.AppendLine($"{condLabel}:");
+            context.MarkLabel(condLabel);
 
             // Проверяем условие. Если true -> прыгаем в начало (startLabel).
             ASMInstructions.EmitLogicalCondition(node.Condition, startLabel, endLabel, context);
 
-            context.Asm.AppendLine($"{endLabel}:");
+            context.MarkLabel(endLabel);
 
             _loopContexts.Pop();
         }
@@ -393,7 +396,7 @@ namespace NETMCUCompiler.CodeBuilder
             // 3. Вывод тел кейсов
             foreach (var section in node.Sections)
             {
-                context.Asm.AppendLine($"{sectionLabels[section]}:");
+                context.MarkLabel(sectionLabels[section]);
                 foreach (var statement in section.Statements)
                 {
                     Visit(statement);
@@ -401,7 +404,7 @@ namespace NETMCUCompiler.CodeBuilder
             }
 
             // Конец
-            context.Asm.AppendLine($"{endSwitchLabel}:");
+            context.MarkLabel(endSwitchLabel);
             _loopContexts.Pop();
 
             // Освобождаем регистры
@@ -706,18 +709,18 @@ namespace NETMCUCompiler.CodeBuilder
             ASMInstructions.EmitLogicalCondition(node.Condition, trueLabel, falseLabel, context);
 
             // Тело TRUE
-            context.Asm.AppendLine($"{trueLabel}:");
+            context.MarkLabel(trueLabel);
             Visit(node.Statement);
             ASMInstructions.EmitJump(endLabel, context);
 
             // Тело FALSE (или следующий Else If)
-            context.Asm.AppendLine($"{falseLabel}:");
+            context.MarkLabel(falseLabel);
             if (node.Else != null)
             {
                 Visit(node.Else.Statement);
             }
 
-            context.Asm.AppendLine($"{endLabel}:");
+            context.MarkLabel(endLabel);
         }
         //public override void VisitClassDeclaration(ClassDeclarationSyntax node)
         //{

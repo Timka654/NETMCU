@@ -114,6 +114,9 @@ namespace NETMCUCompiler.CodeBuilder
                     if (method is MethodDeclarationSyntax mds && context.ExceptMethods.Contains(mds))
                         return false;
 
+                    if (method.Ancestors().OfType<InterfaceDeclarationSyntax>().Any())
+                        return false;
+
                     var containingType = method.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
                     if (containingType != null)
                     {
@@ -365,6 +368,7 @@ namespace NETMCUCompiler.CodeBuilder
                 builder.Visit(expressionBody);
 
             ASMInstructions.EmitMethodEpilogue(method);
+            ASMInstructions.ResolveJumps(method);
         }
     }
 }

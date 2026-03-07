@@ -1,4 +1,4 @@
-﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System;
@@ -239,7 +239,7 @@ namespace NETMCUCompiler.CodeBuilder
                 {
                     string nextAnd = $"L_AND_{context.LabelCount++}";
                     EmitLogicalCondition(bin.Left, nextAnd, falseLabel, context);
-                    context.Asm.AppendLine($"{nextAnd}:");
+                    context.MarkLabel(nextAnd);
                     EmitLogicalCondition(bin.Right, trueLabel, falseLabel, context);
                     return;
                 }
@@ -397,14 +397,14 @@ namespace NETMCUCompiler.CodeBuilder
 
                     EmitLogicalCondition(binary, trueLabel, falseLabel, context);
 
-                    context.Emit($"{trueLabel}:");
+                    context.MarkLabel(trueLabel);
                     EmitMovImmediate(targetReg, 1, context);
                     EmitJump(endLabel, context);
 
-                    context.Emit($"{falseLabel}:");
+                    context.MarkLabel(falseLabel);
                     EmitMovImmediate(targetReg, 0, context);
 
-                    context.Emit($"{endLabel}:");
+                    context.MarkLabel(endLabel);
                 }
                 else
                 {
@@ -531,6 +531,22 @@ namespace NETMCUCompiler.CodeBuilder
                     return;
                 }
 
+                var typeInfo = context.SemanticModel.GetTypeInfo(memberAccess.Expression);
+                if (typeInfo.Type?.TypeKind == TypeKind.Array && memberAccess.Name.ToString() == "Length")
+                {
+                    int arrReg = tempOffset + 1;
+                    EmitExpression(memberAccess.Expression, arrReg, context, tempOffset);
+
+                    int fourReg = tempOffset + 2;
+                    EmitMovImmediate(fourReg, 4, context);
+
+                    int addrReg = tempOffset + 3;
+                    EmitArithmeticOp(SyntaxKind.SubtractExpression, addrReg, arrReg, fourReg, context);
+
+                    context.Emit($"LDR r{targetReg}, [r{addrReg}, #0]");
+                    return;
+                }
+
                 // Иначе это чтение свойства объекта или поля (obj.Property или obj.Field)
                 var symbolInfo = context.SemanticModel.GetSymbolInfo(memberAccess).Symbol;
                 if (symbolInfo is IPropertySymbol propertySymbol)
@@ -591,11 +607,11 @@ namespace NETMCUCompiler.CodeBuilder
                 context.Emit($"B {endLabel}");
 
                 // 3. Ветка FALSE
-                context.Emit($"{falseLabel}:");
+                context.MarkLabel(falseLabel);
                 EmitExpression(ternary.WhenFalse, targetReg, context, tempOffset);
 
                 // 4. Финал
-                context.Emit($"{endLabel}:");
+                context.MarkLabel(endLabel);
             }
             else if (expr is ObjectCreationExpressionSyntax objectCreation)
             {
@@ -671,15 +687,23 @@ namespace NETMCUCompiler.CodeBuilder
                         EmitExpression(sizeExpr, lengthReg, context, tempOffset);
                     }
 
-                    // multiply size by 4 bytes (assuming 32 bit structures/refs)
+                    // multiply size by 4 bytes (assuming 32 bit structures/refs) and add 4 bytes for length header
+                    int fourReg = tempOffset + 3;
                     EmitMovImmediate(calcReg, 4, context);
+                    EmitMovImmediate(fourReg, 4, context);
                     EmitArithmeticOp(SyntaxKind.MultiplyExpression, calcReg, lengthReg, calcReg, context);
+                    EmitArithmeticOp(SyntaxKind.AddExpression, calcReg, calcReg, fourReg, context); // size = length * 4 + 4
 
                     if (calcReg != 0) EmitMovRegister(0, calcReg, context);
                     EmitCall("NETMCU__Memory__Alloc", context, isStatic: true, isNative: true);
 
                     int arrPtrReg = targetReg != 0 ? targetReg : tempOffset + 2;
                     if (arrPtrReg != 0) EmitMovRegister(arrPtrReg, 0, context);
+
+                    // Write length at offset 0
+                    context.Emit($"STR r{lengthReg}, [r{arrPtrReg}, #0]");
+                    // Advance pointer to first element
+                    EmitArithmeticOp(SyntaxKind.AddExpression, arrPtrReg, arrPtrReg, fourReg, context);
 
                     // Initialize array if any values provided
                     if (arrayCreation.Initializer != null)
@@ -768,7 +792,7 @@ namespace NETMCUCompiler.CodeBuilder
             context.Asm.AppendLine(".thumb");
             context.Asm.AppendLine($".section .text.{methodName}, \"ax\"");
             context.Asm.AppendLine($".global {methodName}");
-            context.Asm.AppendLine($"{methodName}:");
+            context.MarkLabel(methodName);
             context.Asm.AppendLine("    PUSH {r4-r11, lr}");
 
             // BINARY: Инструкция PUSH {r4-r11, lr} в Thumb-2
@@ -784,7 +808,7 @@ namespace NETMCUCompiler.CodeBuilder
 
             // --- ЭПИЛОГ ---
             // ASM:
-            context.Asm.AppendLine($"{methodName}_exit:");
+            context.MarkLabel($"{methodName}_exit");
             context.Asm.AppendLine("    POP {r4-r11, pc}");
             context.Asm.AppendLine(".align 4");
 
@@ -809,78 +833,57 @@ namespace NETMCUCompiler.CodeBuilder
             ushort opcode = (ushort)(0x2800 | (reg << 8) | (value & 0xFF));
             context.Write16(opcode);
         }
-        public static void EmitCondition(ExpressionSyntax condition, string falseLabel, MethodCompilationContext context)
+        public static void ResolveJumps(MethodCompilationContext context)
         {
-            if (condition is BinaryExpressionSyntax binary)
+            var bin = context.Bin.ToArray();
+            foreach (var jump in context.Jumps)
             {
-                // Если это логическое ИЛИ (||)
-                if (binary.IsKind(SyntaxKind.LogicalOrExpression))
+                if (!context.Labels.TryGetValue(jump.TargetLabel, out int targetOffset))
+                    throw new Exception($"Label '{jump.TargetLabel}' not found in method {context.Name} ({context.Class?.Name})");
+
+                // Calculate relative offset. PC is at instruction Address + 4.
+                int pc = jump.Offset + 4;
+                int diff = targetOffset - pc; // in bytes
+
+                if (jump.IsConditional)
                 {
-                    // Здесь нужна более сложная логика с промежуточными метками, 
-                    // давай пока реализуем базовые сравнения
-                    return;
+                    // Conditional branch is 16-bit T1
+                    // instruction format: [1101][cond:4][imm8] -> 0xD0 | cond
+                    int val = diff / 2;
+                    if (val < -128 || val > 127) throw new Exception($"Jump relative distance {val} halfwords is too far for 8-bit conditional jump in {context.Name}");
+
+                    byte condCode = (byte)(bin[jump.Offset + 1] & 0x0F);
+                    bin[jump.Offset] = (byte)(val & 0xFF);
+                    bin[jump.Offset + 1] = (byte)(0xD0 | condCode);
                 }
-
-                // Если это простое сравнение (a == 11)
-                if (binary.Left is IdentifierNameSyntax leftId)
+                else
                 {
-                    int leftReg = context.RegisterMap[leftId.Identifier.Text];
+                    // Unconditional branch B Encoding T2: [11100][imm11] -> 0xE000 | (imm11 & 0x7FF)
+                    int val = diff / 2;
+                    if (val < -1024 || val > 1023) throw new Exception($"Jump relative distance {val} halfwords is too far for 11-bit unconditional jump in {context.Name}");
 
-                    if (binary.Right is LiteralExpressionSyntax literal)
-                    {
-                        int val = ParseLiteral(literal, context);
-                        EmitCompareImmediate(leftReg, val, context);
-                    }
-
-                    // Выбираем инструкцию инвертированного прыжка 
-                    // (если условие НЕ ВЕРНО -> прыгаем в конец)
-                    string jmpOp = binary.Kind() switch
-                    {
-                        SyntaxKind.EqualsExpression => "BNE",      // ==  -> прыжок если !=
-                        SyntaxKind.NotEqualsExpression => "BEQ",   // !=  -> прыжок если ==
-                        SyntaxKind.GreaterThanExpression => "BLE", // >   -> прыжок если <=
-                        SyntaxKind.LessThanExpression => "BGE",    // <   -> прыжок если >=
-                        SyntaxKind.GreaterThanOrEqualExpression => "BLT", // >= -> прыжок если <
-                        SyntaxKind.LessThanOrEqualExpression => "BGT",    // <= -> прыжок если >
-                        _ => "BNE"
-                    };
-
-                    context.Emit($"{jmpOp} {falseLabel}");
-                    // В бинарник пишем 2 байта заглушки для относительного прыжка
-                    context.Bytecode(0x00); // TODO: Реализовать патчинг адресов
-                    context.Bytecode(0x00);// TODO: Реализовать патчинг адресов
+                    ushort op = (ushort)(0xE000 | (val & 0x7FF));
+                    bin[jump.Offset] = (byte)(op & 0xFF);
+                    bin[jump.Offset + 1] = (byte)(op >> 8);
                 }
             }
+
+            // Write back
+            context.Bin.Position = 0;
+            context.Bin.Write(bin, 0, bin.Length);
         }
+
         public static void EmitJump(string label, MethodCompilationContext context)
         {
             context.Emit($"B {label}");
 
             // Binary: Thumb-16 (Encoding T2)
             // Формат: [11100][imm11] -> 0xE000
-            // Пока пишем заглушку 0x00 0xE0 (Little Endian)
+            context.AddJump(label, false);
             context.Bytecode(0x00);
             context.Bytecode(0xE0);
         }
-        public static void EmitConditionalBranch(SyntaxKind conditionKind, string targetLabel, MethodCompilationContext context)
-        {
-            // Выбираем операцию инвертированного перехода
-            string jmpOp = conditionKind switch
-            {
-                SyntaxKind.EqualsExpression => "BNE",           // == -> прыгаем если !=
-                SyntaxKind.NotEqualsExpression => "BEQ",        // != -> прыгаем если ==
-                SyntaxKind.GreaterThanExpression => "BLE",      // >  -> прыгаем если <=
-                SyntaxKind.LessThanExpression => "BGE",         // <  -> прыгаем если >=
-                SyntaxKind.GreaterThanOrEqualExpression => "BLT",// >= -> прыгаем если <
-                SyntaxKind.LessThanOrEqualExpression => "BGT",   // <= -> прыгаем если >
-                _ => "BNE"
-            };
 
-            context.Emit($"{jmpOp} {targetLabel}");
-            // Заглушка для бинарника (относительный переход в Thumb-16)
-            context.Bytecode(0x00);
-            context.Bytecode((byte)(0xD0)); // Код инструкции B<cc> (0xD0 - 0xDF)
-        }
         public static void EmitBranch(string label, string condition, MethodCompilationContext context)
         {
             // condition может быть "EQ", "NE", "GT", "LT", "GE", "LE"
@@ -897,6 +900,7 @@ namespace NETMCUCompiler.CodeBuilder
                 "LE" => 13,
                 _ => 1
             };
+            context.AddJump(label, true);
             context.Bytecode(0x00); // Заглушка смещения
             context.Bytecode((byte)(0xD0 | condCode));
         }
@@ -991,7 +995,7 @@ namespace NETMCUCompiler.CodeBuilder
         }
         public static void EmitMethodEpilogue(MethodCompilationContext context)
         {
-            context.Emit($"{context.Name}_exit:"); // Метка для быстрых выходов (return)
+            context.MarkLabel($"{context.Name}_exit"); // Метка для быстрых выходов (return)
             context.Emit("POP {r4-r11, pc}");
 
             // Бинарный код для POP {r4-r11, pc} 

@@ -109,6 +109,20 @@ namespace NETMCUCompiler.CodeBuilder
         // Храним переменные, которые живут на стеке
         public Dictionary<string, StackVariable> StackMap { get; } = new();
 
+        public Dictionary<string, int> Labels { get; } = new();
+        public List<JumpRecord> Jumps { get; } = new();
+
+        public void MarkLabel(string label)
+        {
+            Asm.AppendLine($"{label}:");
+            Labels[label] = (int)Bin.Position;
+        }
+
+        public void AddJump(string label, bool isConditional)
+        {
+            Jumps.Add(new JumpRecord { TargetLabel = label, Offset = (int)Bin.Position, IsConditional = isConditional });
+        }
+
         public override CompilationContextTypeEnum ContextType => CompilationContextTypeEnum.Method;
 
         private int _currentStackPointer = 0;
@@ -191,5 +205,11 @@ namespace NETMCUCompiler.CodeBuilder
 
         public override string ToString()
         => Name;
+    }
+    public class JumpRecord
+    {
+        public string TargetLabel { get; set; } = null!;
+        public int Offset { get; set; }
+        public bool IsConditional { get; set; }
     }
 }
