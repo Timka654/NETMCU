@@ -341,9 +341,6 @@ namespace NETMCUCompiler.CodeBuilder
             bool isStatic = modifiers.Value.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
             var parameters = methodSymbol.Parameters;
 
-            // Настраиваем фрейм, теперь передавая параметры
-            ASMInstructions.EmitMethodPrologue(!isStatic, parameters, method);
-
             var declarations = method.MethodSyntax.DescendantNodes().OfType<VariableDeclarationSyntax>();
             foreach (var decl in declarations)
             {
@@ -360,6 +357,10 @@ namespace NETMCUCompiler.CodeBuilder
                     method.AllocateOnStack(v.Identifier.Text, typeName);
                 }
             }
+
+            // Настраиваем фрейм, теперь передавая параметры
+            ASMInstructions.EmitMethodPrologue(!isStatic, parameters, method);
+
             // Пользуемся нашим старым добрым билдером для внутренностей
             var builder = new Stm32MethodBuilder(method);
             if (body != null)

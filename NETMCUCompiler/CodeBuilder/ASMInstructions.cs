@@ -183,6 +183,69 @@ namespace NETMCUCompiler.CodeBuilder
             // Placeholder: currently not strictly needed without baseReg. Actually, let's just make EmitMemoryAccess.
         }
 
+        public static void EmitAddressOf(ExpressionSyntax expr, int targetReg, MethodCompilationContext context, int tempOffset = 0)
+        {
+            var symbolInfo = context.SemanticModel.GetSymbolInfo(expr).Symbol;
+
+            if (expr is IdentifierNameSyntax id)
+            {
+                string varName = id.Identifier.Text;
+                if (context.StackMap.TryGetValue(varName, out var stackVar))
+                {
+                    int offset = stackVar.StackOffset;
+                    context.Emit($"ADD r{targetReg}, SP, #{offset}");
+                    
+                    // T2 ADD.W: 1111_0i10_0000_1101_0_imm3_Rd_imm8
+                    // We'll use Thumb-2 wide instruction for ADD Rd, SP, #imm12
+                    uint op = 0xF20D0000u;
+                    op |= ((uint)targetReg & 0xF) << 8;
+                    // imm12 formatting
+                    uint i = ((uint)offset >> 11) & 1;
+                    uint imm3 = ((uint)offset >> 8) & 7;
+                    uint imm8 = (uint)offset & 0xFF;
+                    op |= (i << 26) | (imm3 << 12) | imm8;
+                    context.Write32(op);
+                    return;
+                }
+            }
+            else if (expr is MemberAccessExpressionSyntax memberAccess && symbolInfo is IFieldSymbol fieldSymbol)
+            {
+                string typeName = fieldSymbol.ContainingType.ToDisplayString();
+                if (context.Class.Global.Childs.TryGetValue(typeName, out var typeCtx) && typeCtx is TypeCompilationContext tcc)
+                {
+                    if (tcc.FieldOffsets.TryGetValue(fieldSymbol.Name, out int fieldOffset))
+                    {
+                        string structName = memberAccess.Expression.ToString();
+                        int baseReg = tempOffset + 1;
+
+                        if (context.StackMap.TryGetValue(structName, out var stackVar))
+                        {
+                            // SP + stackVar.StackOffset + fieldOffset
+                            int totalOffset = stackVar.StackOffset + fieldOffset;
+                            context.Emit($"ADD r{targetReg}, SP, #{totalOffset}");
+                            
+                            uint op = 0xF20D0000u;
+                            op |= ((uint)targetReg & 0xF) << 8;
+                            uint i = ((uint)totalOffset >> 11) & 1;
+                            uint imm3 = ((uint)totalOffset >> 8) & 7;
+                            uint imm8 = (uint)totalOffset & 0xFF;
+                            op |= (i << 26) | (imm3 << 12) | imm8;
+                            context.Write32(op);
+                        }
+                        else
+                        {
+                            EmitExpression(memberAccess.Expression, baseReg, context, tempOffset + 1);
+                            EmitOpWithImmediate(SyntaxKind.AddExpression, targetReg, baseReg, fieldOffset, context);
+                        }
+                        return;
+                    }
+                }
+            }
+
+            context.Emit($"@ TODO: EmitAddressOf not fully supported for {expr}");
+            EmitMovImmediate(targetReg, 0, context);
+        }
+
         public static void EmitMemoryAccess(bool isLoad, int targetReg, int baseReg, int offset, MethodCompilationContext context)
         {
             if (baseReg == 13) // SP
@@ -399,14 +462,30 @@ namespace NETMCUCompiler.CodeBuilder
                 // Случай: var a = b;
                 if (context.RegisterMap.TryGetValue(id.Identifier.Text, out int srcReg))
                 {
-                    // Инструкция MOV Rd, Rm (копирование регистра в регистр)
-                    // Thumb-16: 0x4600 | (src << 3) | target (с учетом High Registers флага, но r4-r11 влезают)
-                    context.Emit($"MOV r{targetReg}, r{srcReg}");
-                    ushort opcode = (ushort)(0x4600 | (srcReg << 3) | (targetReg & 0x7));
-                    if (targetReg > 7) opcode |= 0x0080; // Коррекция для r8-r11 (High register bit)
+                    bool isRef = false;
+                    var symbol = context.SemanticModel.GetSymbolInfo(id).Symbol;
+                    if (symbol is IParameterSymbol paramSymbol && 
+                        (paramSymbol.RefKind == RefKind.Ref || paramSymbol.RefKind == RefKind.Out))
+                    {
+                        isRef = true;
+                    }
 
-                    context.Bytecode((byte)(opcode & 0xFF));
-                    context.Bytecode((byte)(opcode >> 8));
+                    if (isRef)
+                    {
+                        // Dereference the pointer: LDR targetReg, [srcReg, #0]
+                        EmitMemoryAccess(true, targetReg, srcReg, 0, context);
+                    }
+                    else
+                    {
+                        // Инструкция MOV Rd, Rm (копирование регистра в регистр)
+                        // Thumb-16: 0x4600 | (src << 3) | target (с учетом High Registers флага, но r4-r11 влезают)
+                        context.Emit($"MOV r{targetReg}, r{srcReg}");
+                        ushort opcode = (ushort)(0x4600 | (srcReg << 3) | (targetReg & 0x7));
+                        if (targetReg > 7) opcode |= 0x0080; // Коррекция для r8-r11 (High register bit)
+
+                        context.Bytecode((byte)(opcode & 0xFF));
+                        context.Bytecode((byte)(opcode >> 8));
+                    }
                 }
             }
             else if (expr is BinaryExpressionSyntax binary)
@@ -699,7 +778,17 @@ namespace NETMCUCompiler.CodeBuilder
                     // Wait, we need to load arguments inside r1-r3!
                     for (int i = 0; i < args.Count; i++)
                     {
-                        EmitExpression(args[i].Expression, i + 1, context, tempOffset);
+                        var argument = args[i];
+                        int argReg = i + 1; // regOffset is 1 since r0 is "this"
+                        if (argReg > 3) throw new Exception("Поддерживается максимум 4 аргумента (включая this)");
+
+                        if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword))
+                        {
+                            EmitAddressOf(argument.Expression, argReg, context, tempOffset);
+                            continue;
+                        }
+
+                        EmitExpression(args[i].Expression, argReg, context, tempOffset);
                     }
 
                     if (targetReg != 0) 
@@ -800,20 +889,23 @@ namespace NETMCUCompiler.CodeBuilder
                         context.Emit("MOV r0, r4"); // fallback "this"
                     regOffset = 1;
                 }
+                else
+                {
+                    context.NextFreeRegister = 4; // В статических методах 'this' нет, начинаем с r4
+                }
 
                 for (int i = 0; i < args.Count; i++)
                 {
                     var argument = args[i];
-                    if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword))
+                    int argReg = i + regOffset;
+                    if (argReg > 3) throw new Exception("Поддерживается максимум 4 аргумента (включая this)");
+
+                    if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword))
                     {
-                        string varName = argument.Expression.ToString();
-                        if (context.StackMap.TryGetValue(varName, out var stackVar))
-                            context.Emit($"ADD R{i + regOffset}, SP, #{stackVar.StackOffset}");
+                        EmitAddressOf(argument.Expression, argReg, context, tempOffset);
                         continue;
                     }
 
-                    int argReg = i + regOffset;
-                    if (argReg > 3) throw new Exception("Поддерживается максимум 4 аргумента (включая this)");
                     EmitExpression(args[i].Expression, argReg, context, tempOffset);
                 }
 
@@ -831,176 +923,20 @@ namespace NETMCUCompiler.CodeBuilder
             }
         }
 
-        public static void EmitFunctionFrame(MethodDeclarationSyntax node, MethodCompilationContext context, Action bodyBuilder)
-        {
-            var methodName = node.Identifier.Text;
-
-            // --- ПРOЛОГ ---
-            // ASM:
-            context.Asm.AppendLine(".syntax unified");
-            context.Asm.AppendLine(".thumb");
-            context.Asm.AppendLine($".section .text.{methodName}, \"ax\"");
-            context.Asm.AppendLine($".global {methodName}");
-            context.MarkLabel(methodName);
-            context.Asm.AppendLine("    PUSH {r4-r11, lr}");
-
-            // BINARY: Инструкция PUSH {r4-r11, lr} в Thumb-2
-            // Код: 0xB5F0 (в Little Endian это F0 B5)
-            context.Bytecode(0xF0);
-            context.Bytecode(0xB5);
-
-
-            // --- ТУТ БУДЕТ ТЕЛО (Шаг 2 и далее) ---
-            // Пока оставляем место или передаем пустую строку/массив
-            bodyBuilder();
-
-
-            // --- ЭПИЛОГ ---
-            // ASM:
-            context.MarkLabel($"{methodName}_exit");
-            context.Asm.AppendLine("    POP {r4-r11, pc}");
-            context.Asm.AppendLine(".align 4");
-
-            // BINARY: Инструкция POP {r4-r11, pc} в Thumb-2
-            // Код: 0xBDF0 (в Little Endian это F0 BD)
-            context.Bytecode(0xF0);
-            context.Bytecode(0xBD);
-        }
-
-        public static void EmitCompare(int leftReg, int rightReg, MethodCompilationContext context)
-        {
-            context.Emit($"CMP r{leftReg}, r{rightReg}");
-            // Thumb-16: 0x4280 | (right << 3) | left
-            ushort opcode = (ushort)(0x4280 | (rightReg << 3) | leftReg);
-            context.Write16(opcode);
-        }
-
-        public static void EmitCompareImmediate(int reg, int value, MethodCompilationContext context)
-        {
-            context.Emit($"CMP r{reg}, #{value}");
-            // Thumb-16: 0x2800 | (reg << 8) | (value & 0xFF)
-            ushort opcode = (ushort)(0x2800 | (reg << 8) | (value & 0xFF));
-            context.Write16(opcode);
-        }
-        public static void ResolveJumps(MethodCompilationContext context)
-        {
-            var bin = context.Bin.ToArray();
-            foreach (var jump in context.Jumps)
-            {
-                if (!context.Labels.TryGetValue(jump.TargetLabel, out int targetOffset))
-                    throw new Exception($"Label '{jump.TargetLabel}' not found in method {context.Name} ({context.Class?.Name})");
-
-                // Calculate relative offset. PC is at instruction Address + 4.
-                int pc = jump.Offset + 4;
-                int diff = targetOffset - pc; // in bytes
-
-                if (jump.IsConditional)
-                {
-                    // Conditional branch is 16-bit T1
-                    // instruction format: [1101][cond:4][imm8] -> 0xD0 | cond
-                    int val = diff / 2;
-                    if (val < -128 || val > 127) throw new Exception($"Jump relative distance {val} halfwords is too far for 8-bit conditional jump in {context.Name}");
-
-                    byte condCode = (byte)(bin[jump.Offset + 1] & 0x0F);
-                    bin[jump.Offset] = (byte)(val & 0xFF);
-                    bin[jump.Offset + 1] = (byte)(0xD0 | condCode);
-                }
-                else
-                {
-                    // Unconditional branch B Encoding T2: [11100][imm11] -> 0xE000 | (imm11 & 0x7FF)
-                    int val = diff / 2;
-                    if (val < -1024 || val > 1023) throw new Exception($"Jump relative distance {val} halfwords is too far for 11-bit unconditional jump in {context.Name}");
-
-                    ushort op = (ushort)(0xE000 | (val & 0x7FF));
-                    bin[jump.Offset] = (byte)(op & 0xFF);
-                    bin[jump.Offset + 1] = (byte)(op >> 8);
-                }
-            }
-
-            // Write back
-            context.Bin.Position = 0;
-            context.Bin.Write(bin, 0, bin.Length);
-        }
-
-        public static void EmitJump(string label, MethodCompilationContext context)
-        {
-            context.Emit($"B {label}");
-
-            // Binary: Thumb-16 (Encoding T2)
-            // Формат: [11100][imm11] -> 0xE000
-            context.AddJump(label, false);
-            context.Bytecode(0x00);
-            context.Bytecode(0xE0);
-        }
-
-        public static void EmitBranch(string label, string condition, MethodCompilationContext context)
-        {
-            // condition может быть "EQ", "NE", "GT", "LT", "GE", "LE"
-            context.Emit($"B{condition} {label}");
-
-            // Binary: B<cc> это 0xD0 + код условия
-            byte condCode = condition switch
-            {
-                "EQ" => 0,
-                "NE" => 1,
-                "GE" => 10,
-                "LT" => 11,
-                "GT" => 12,
-                "LE" => 13,
-                _ => 1
-            };
-            context.AddJump(label, true);
-            context.Bytecode(0x00); // Заглушка смещения
-            context.Bytecode((byte)(0xD0 | condCode));
-        }
-
-        public static int ParseLiteral(LiteralExpressionSyntax literal, MethodCompilationContext context)
-        {
-            var valueText = literal.Token.ValueText;
-
-            // 1. Обработка булевых значений
-            if (literal.IsKind(SyntaxKind.TrueLiteralExpression)) return 1;
-            if (literal.IsKind(SyntaxKind.FalseLiteralExpression)) return 0;
-
-            // 2. Обработка null (обычно 0)
-            if (literal.IsKind(SyntaxKind.NullLiteralExpression)) return 0;
-            if (literal.IsKind(SyntaxKind.DefaultLiteralExpression)) return 0;
-
-            if (literal.IsKind(SyntaxKind.StringLiteralExpression))
-            {
-                return -1;
-            }
-
-            // 3. Обработка чисел (включая hex 0x...)
-            try
-            {
-                if (valueText.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                    return Convert.ToInt32(valueText, 16);
-
-                return int.Parse(valueText);
-            }
-            catch (Exception ex)
-            {
-                throw new Exception($"Неподдерживаемый тип константы: {valueText} ({literal.Kind()})", ex);
-            }
-        }
-        public static void EmitCall(string methodName, MethodCompilationContext context, bool isStatic, bool isNative)
-        {
-            context.Emit($"BL {methodName}");
-
-            context.AddRelocation(methodName, isStatic, isNative);
-
-            // Пишем 4 байта заглушки (0x00F0 0x00F8). 
-            // Линковщик найдет их по оффсету из NativeRelocations и заменит на реальный оффсет.
-            context.Write16(0xF000);
-            context.Write16(0xF800);
-        }
-
         public static void EmitMethodPrologue(bool isInstance, System.Collections.Immutable.ImmutableArray<IParameterSymbol> parameters, MethodCompilationContext context)
         {
             // Сохраняем регистры, которые мы будем использовать.
             context.Emit("PUSH {r4-r11, lr}");
             context.Write16(0xB5F0); // PUSH {r4-r7, lr} - нужно будет расширить до r11
+
+            if (context.StackSize > 0)
+            {
+                int size = (context.StackSize + 7) & ~7;
+                context.Emit($"SUB SP, SP, #{size}");
+                uint imm12 = (uint)size;
+                uint op = 0xF1AD0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
+                context.Write32(op);
+            }
 
             int argOffset = 0;
             if (isInstance)
@@ -1045,6 +981,16 @@ namespace NETMCUCompiler.CodeBuilder
         public static void EmitMethodEpilogue(MethodCompilationContext context)
         {
             context.MarkLabel($"{context.Name}_exit"); // Метка для быстрых выходов (return)
+
+            if (context.StackSize > 0)
+            {
+                int size = (context.StackSize + 7) & ~7;
+                context.Emit($"ADD SP, SP, #{size}");
+                uint imm12 = (uint)size;
+                uint op = 0xF10D0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
+                context.Write32(op);
+            }
+
             context.Emit("POP {r4-r11, pc}");
 
             // Бинарный код для POP {r4-r11, pc} 
@@ -1054,17 +1000,143 @@ namespace NETMCUCompiler.CodeBuilder
             context.Emit(".align 4"); // Выравнивание для следующей функции
         }
 
-        public void EmitMethodFrame(MethodDeclarationSyntax node, MethodCompilationContext ctx, bool isInstance)
+        public static void ResolveJumps(MethodCompilationContext context)
         {
-            ctx.Emit($"PUSH {{r4-r11, lr}}");
-            if (isInstance)
+            byte[] binary = context.Bin.ToArray();
+            foreach (var jump in context.Jumps)
             {
-                // Перекладываем указатель на объект из r0 в r4 (сохраняемый регистр)
-                // Теперь r4 — это наш неизменный 'this' на протяжении всей функции
-                ctx.Emit("MOV r4, r0");
-                ctx.RegisterMap["this"] = 4;
+                if (!context.Labels.TryGetValue(jump.TargetLabel, out int targetOffset))
+                    throw new Exception($"Не найдена метка {jump.TargetLabel}");
+
+                // Адрес от которого считается относительный переход
+                int instructionOffset = jump.Offset;
+                // PC в ARM Thumb обычно на 4 байта впереди текущей инструкции
+                int relativeOffset = targetOffset - instructionOffset - 4; 
+
+                if (jump.IsConditional)
+                {
+                    // Относительный переход для B<cc> должен быть в пределах -256..254 байт (8 бит)
+                    int imm8 = relativeOffset / 2;
+                    binary[instructionOffset] = (byte)(imm8 & 0xFF);
+                }
+                else
+                {
+                    // Безусловный переход B (16-bit)
+                    int imm11 = relativeOffset / 2;
+                    binary[instructionOffset] = (byte)(imm11 & 0xFF);
+                    binary[instructionOffset + 1] = (byte)(0xE0 | ((imm11 >> 8) & 0x7));
+                }
             }
-            // ... остальная логика тела ...
+
+            // Переписываем бинарник с пропатченными адресами
+            context.Bin.Position = 0;
+            context.Bin.Write(binary, 0, binary.Length);
+        }
+
+        public static int ParseLiteral(LiteralExpressionSyntax literal, MethodCompilationContext context)
+        {
+            if (literal.Token.ValueText == "true") return 1;
+            if (literal.Token.ValueText == "false") return 0;
+            return Convert.ToInt32(literal.Token.Value);
+        }
+
+        public static void EmitCompare(int left, int right, MethodCompilationContext context)
+        {
+            context.Emit($"CMP r{left}, r{right}");
+            // CMP Rn, Rm (Thumb-16: 0x4280 | Rm << 3 | Rn
+            context.Write16((ushort)(0x4280 | ((right & 0x7) << 3) | (left & 0x7)));
+        }
+
+        public static void EmitCompareImmediate(int reg, int imm, MethodCompilationContext context)
+        {
+            context.Emit($"CMP r{reg}, #{imm}");
+            // CMP Rn, #imm (Thumb-16: 0x2800 | Rn << 8 | imm8)
+            context.Write16((ushort)(0x2800 | ((reg & 0x7) << 8) | (imm & 0xFF)));
+        }
+
+        public static void EmitBranch(string label, string condition, MethodCompilationContext context)
+        {
+            context.Emit($"B{condition} {label}");
+
+            byte condCode = condition switch
+            {
+                "EQ" => 0,
+                "NE" => 1,
+                "GE" => 10,
+                "LT" => 11,
+                "GT" => 12,
+                "LE" => 13,
+                _ => throw new Exception("Unknown branch cond")
+            };
+
+            context.AddJump(label, true);
+            context.Bytecode(0x00); // placeholder
+            context.Bytecode((byte)(0xD0 | condCode));
+        }
+
+        public static void EmitJump(string label, MethodCompilationContext context)
+        {
+            context.Emit($"B {label}");
+            context.AddJump(label, false);
+            context.Bytecode(0x00); // placeholder
+            context.Bytecode(0xE0);
+        }
+
+        public static void EmitCall(string name, MethodCompilationContext context, bool isStatic, bool isNative = false)
+        {
+            if (isNative)
+            {
+                // Вызов нативной функции (например, из встроенной библиотеки)
+                context.Emit($"BL {name}");
+                context.Write16((ushort)0xF000);
+            }
+            else
+            {
+                // Вызов функции (рекурсивный или внешней)
+                context.Emit($"BL {name}");
+            }
+        }
+
+        public static void EmitReturn(MethodCompilationContext context)
+        {
+            context.Emit("BX LR"); // Возврат из функции (переключение на LR)
+        }
+
+        public static void EmitNop(MethodCompilationContext context)
+        {
+            context.Emit("NOP");
+            context.Write16(0x46C0); // NOP для Thumb-16
+        }
+        public static void EmitBreakpoint(MethodCompilationContext context)
+        {
+            context.Emit("BKPT #0");
+            context.Write16(0xBE00); // BKPT для Thumb-16
+        }
+
+        public static int GetStackPointerOffset(MethodCompilationContext context)
+        {
+            // thumb-16: r13 (SP) всегда указывает на вершину стека, и мы выделяем/освобождаем места относительно него.
+            return 13;
+        }
+
+        public static void EmitAllocateStack(MethodCompilationContext context, int size)
+        {
+            // Выделение места в стеке (уменьшение SP)
+            context.Emit($"SUB SP, SP, #{size}");
+
+            uint imm12 = (uint)size;
+            uint op = 0xF10D0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
+            context.Write32(op);
+        }
+
+        public static void EmitReleaseStack(MethodCompilationContext context, int size)
+        {
+            // Освобождение места в стеке (увеличение SP)
+            context.Emit($"ADD SP, SP, #{size}");
+
+            uint imm12 = (uint)size;
+            uint op = 0xF10D0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
+            context.Write32(op);
         }
 
         public static bool TryGetAsConstant(ExpressionSyntax expr, MethodCompilationContext context, out object value)

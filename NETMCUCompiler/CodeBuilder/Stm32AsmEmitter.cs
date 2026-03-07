@@ -567,11 +567,29 @@ namespace NETMCUCompiler.CodeBuilder
         }
         private void HandleLocalAssignment(AssignmentExpressionSyntax node, int destReg, int srcReg)
         {
+            bool isRef = false;
+            if (node.Left is IdentifierNameSyntax id)
+            {
+                var symbol = context.SemanticModel.GetSymbolInfo(id).Symbol;
+                if (symbol is IParameterSymbol paramSymbol && 
+                    (paramSymbol.RefKind == RefKind.Ref || paramSymbol.RefKind == RefKind.Out))
+                {
+                    isRef = true;
+                }
+            }
+
             if (node.IsKind(SyntaxKind.SimpleAssignmentExpression))
             {
                 // Обычное x = y;
-                if (destReg != srcReg)
+                if (isRef)
+                {
+                    // destReg contains a pointer, write srcReg to it
+                    ASMInstructions.EmitMemoryAccess(false, srcReg, destReg, 0, context);
+                }
+                else if (destReg != srcReg)
+                {
                     ASMInstructions.EmitMovRegister(destReg, srcReg, context);
+                }
             }
             else
             {
@@ -588,8 +606,19 @@ namespace NETMCUCompiler.CodeBuilder
 
                 if (opKind != SyntaxKind.None)
                 {
-                    // Выполняем операцию: Rdest = Rdest op Rsrc
-                    ASMInstructions.EmitArithmeticOp(opKind, destReg, destReg, srcReg, context);
+                    if (isRef)
+                    {
+                        int tmpReg = context.NextFreeRegister++;
+                        ASMInstructions.EmitMemoryAccess(true, tmpReg, destReg, 0, context); // Load from pointer
+                        ASMInstructions.EmitArithmeticOp(opKind, tmpReg, tmpReg, srcReg, context);
+                        ASMInstructions.EmitMemoryAccess(false, tmpReg, destReg, 0, context); // Store to pointer
+                        context.NextFreeRegister--;
+                    }
+                    else
+                    {
+                        // Выполняем операцию: Rdest = Rdest op Rsrc
+                        ASMInstructions.EmitArithmeticOp(opKind, destReg, destReg, srcReg, context);
+                    }
                 }
             }
         }

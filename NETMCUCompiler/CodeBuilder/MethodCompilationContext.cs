@@ -125,7 +125,7 @@ namespace NETMCUCompiler.CodeBuilder
 
         public override CompilationContextTypeEnum ContextType => CompilationContextTypeEnum.Method;
 
-        private int _currentStackPointer = 0;
+        public int StackSize { get; private set; } = 0;
 
         public void AllocateOnStack(string name, string typeName)
         {
@@ -137,9 +137,9 @@ namespace NETMCUCompiler.CodeBuilder
                 {
                     Name = name,
                     Metadata = tcc,
-                    StackOffset = _currentStackPointer
+                    StackOffset = StackSize
                 };
-                _currentStackPointer += tcc.Size;
+                StackSize += tcc.Size;
 
                 // Важно: в будущем нам нужно будет вычесть _currentStackPointer из SP 
                 // в начале метода (Prologue), чтобы зарезервировать место.
