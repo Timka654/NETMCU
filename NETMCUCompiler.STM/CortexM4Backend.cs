@@ -1,21 +1,17 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using NETMCUCompiler.Shared.Attributes;
+using NETMCUCompiler.Shared.Compilation;
+using NETMCUCompiler.Shared.Compilation.Backend;
 using System.Collections.Immutable;
 
 namespace NETMCUCompiler.CodeBuilder.Backends
 {
+    [MCUCompilationBackend("cortex-m4")]
     public class CortexM4Backend : MCUBackend
     {
-        public override TypeCompilationContext CreateTypeContext(TypeDeclarationSyntax type, SemanticModel semanticModel, CompilationContext global, string name)
-        {
-            return new TypeCompilationContext(type, semanticModel, global) { Name = name };
-        }
-
-        public override MethodCompilationContext CreateMethodContext(SyntaxNode methodSyntax, IMethodSymbol symbol, BaseCompilationContext parentContext, string name)
-        {
-            return new MethodCompilationContext(methodSyntax, symbol, parentContext) { Name = name };
-        }
+        public override bool MultiThreadingSupported => true;
 
         public override void GenerateMethodPrologue(MethodCompilationContext context, bool isInstance, ImmutableArray<IParameterSymbol> parameters)
         {

@@ -2,6 +2,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
+using NETMCUCompiler.Shared.Compilation.Building;
 using System;
 using System.Collections.Generic;
 using System.Text;

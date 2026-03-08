@@ -2,19 +2,26 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System;
-using System.Linq;
 using System.Collections.Immutable;
+using System.Linq;
+using System.Xml.Linq;
 
-namespace NETMCUCompiler.CodeBuilder.Backends
+namespace NETMCUCompiler.Shared.Compilation.Backend
 {
     public record VariableAllocationContext(string VarName, int StackOffset, int RegisterIndex, bool IsStack, bool HasInitializer, int InitValueReg);
 
     public abstract class MCUBackend
     {
-        public abstract TypeCompilationContext CreateTypeContext(TypeDeclarationSyntax type, SemanticModel semanticModel, CompilationContext global, string name);
-        public abstract MethodCompilationContext CreateMethodContext(SyntaxNode methodSyntax, IMethodSymbol symbol, BaseCompilationContext parentContext, string name);
+        public abstract bool MultiThreadingSupported { get; }
+
+        public virtual TypeCompilationContext CreateTypeContext(TypeDeclarationSyntax type, SemanticModel semanticModel, CompilationContext global, string name)
+            => new TypeCompilationContext(type, semanticModel, global) { Name = name };
+
+        public virtual MethodCompilationContext CreateMethodContext(SyntaxNode methodSyntax, IMethodSymbol symbol, BaseCompilationContext parentContext, string name)
+            => new MethodCompilationContext(methodSyntax, symbol, parentContext) { Name = name };
 
         public abstract void GenerateMethodPrologue(MethodCompilationContext context, bool isInstance, ImmutableArray<IParameterSymbol> parameters);
+
         public abstract void GenerateMethodEpilogue(MethodCompilationContext context);
 
         public virtual void GenerateIfStatement(MethodCompilationContext context, ExpressionSyntax condition, Action generateTrueBlock, Action generateFalseBlock)

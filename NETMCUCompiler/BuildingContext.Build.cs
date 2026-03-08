@@ -1,5 +1,6 @@
 using Microsoft.CodeAnalysis;
 using NETMCUCompiler.CodeBuilder;
+using NETMCUCompiler.Shared.Compilation;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -193,7 +194,7 @@ namespace NETMCUCompiler
 
             compilationContext = new CompilationContext(null)
             {
-                Backend = new NETMCUCompiler.CodeBuilder.Backends.CortexM4Backend(),
+                Backend = backend,
                 ExceptTypes = [mcuConfigClassDeclaration],
                 ExceptMethods = [],
                 BinaryPath = System.IO.Path.Combine(mcuBinPath, "output.bin"),

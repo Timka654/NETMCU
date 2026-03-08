@@ -6,6 +6,9 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
 using Microsoft.Extensions.Options;
 using NETMCUCompiler.CodeBuilder;
+using NETMCUCompiler.Shared.Compilation;
+using NETMCUCompiler.Shared.Compilation.Backend;
+using NETMCUCompiler.Shared.Compilation.Building;
 using Newtonsoft.Json.Linq;
 using System.Collections.Generic;
 using System.Collections.Immutable;
@@ -18,7 +21,10 @@ using System.Text.RegularExpressions;
 
 namespace NETMCUCompiler
 {
-    public partial class BuildingContext(string path, BuildingOutputTypeEnum type, SolutionContext solutionContext)
+    public partial class BuildingContext(string path
+        , BuildingOutputTypeEnum type
+        , SolutionContext solutionContext
+        , MCUBackend backend) : IBuildingContext
     {
         public string Path { get; private set; } = path;
 
@@ -122,6 +128,4 @@ namespace NETMCUCompiler
     }
 
     public record configureRecord(string fname, IMethodSymbol fsymb, Dictionary<string, object> args);
-
-    public record RelocationRecord(MethodCompilationContext Context, int Offset, bool isStatic);
 }

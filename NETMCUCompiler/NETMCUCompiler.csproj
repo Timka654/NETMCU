@@ -22,6 +22,11 @@
 		<PackageReference Include="Microsoft.CodeAnalysis" Version="5.0.0" />
 		<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
 		<PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="5.0.0" />
+		<PackageReference Include="NSL.Utils" Version="2026.2.14.2219" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <ProjectReference Include="..\NETMCUCompiler.Shared\NETMCUCompiler.Shared.csproj" />
 	</ItemGroup>
 
 </Project>

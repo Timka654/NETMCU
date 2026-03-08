@@ -2,7 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System.Collections.Generic;
 
-namespace NETMCUCompiler.CodeBuilder
+namespace NETMCUCompiler.Shared.Compilation.Backend
 {
     public record ArrayCreationInfo(
         ITypeSymbol TypeSymbol,

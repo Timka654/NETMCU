@@ -1,5 +1,9 @@
-﻿namespace NETMCUCompiler.CodeBuilder
+﻿namespace NETMCUCompiler.Shared.Compilation
 {
+    public record RelocationRecord(MethodCompilationContext Context, int Offset, bool isStatic);
+
+    public record StackVariable(string Name, TypeCompilationContext Metadata, int StackOffset);
+
     public abstract class BaseCompilationContext
     {
         public Dictionary<string, BaseCompilationContext> Childs { get; } = new();

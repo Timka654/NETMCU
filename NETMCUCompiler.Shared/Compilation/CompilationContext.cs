@@ -1,14 +1,13 @@
 ﻿using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Newtonsoft.Json.Linq;
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Security.Claims;
 using System.Xml.Linq;
+using NETMCUCompiler.Shared.Compilation.Building;
+using NETMCUCompiler.Shared.Compilation.Backend;
 
-using NETMCUCompiler.CodeBuilder.Backends;
-
-namespace NETMCUCompiler.CodeBuilder
+namespace NETMCUCompiler.Shared.Compilation
 {
     public class CompilationContext(BaseCompilationContext? ParentContext) : BaseCompilationContext(ParentContext)
     {
@@ -26,7 +25,7 @@ namespace NETMCUCompiler.CodeBuilder
 
         //public required LinkerContext[] LinkerContexts { get; set; }
 
-        public required BuildingContext BuildingContext { get; init; }
+        public required IBuildingContext BuildingContext { get; init; }
 
         public string BinaryPath { get; set; }
 

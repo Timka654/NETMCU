@@ -6,7 +6,7 @@ using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Text;
 
-namespace NETMCUCompiler.CodeBuilder
+namespace NETMCUCompiler.Shared.Compilation
 {
     public class MethodCompilationContext : BaseCompilationContext
     {
@@ -133,29 +133,20 @@ namespace NETMCUCompiler.CodeBuilder
 
         public int StackSize { get; private set; } = 0;
 
-        public void AllocateOnStack(string name, string typeName)
+        public virtual void AllocateOnStack(string name, string typeName)
         {
             if (Class.Global.Childs.TryGetValue(typeName, out var meta))
             {
                 if (meta is not TypeCompilationContext tcc) throw new Exception($"Тип {typeName} не является типом данных");
 
-                StackMap[name] = new StackVariable
-                {
-                    Name = name,
-                    Metadata = tcc,
-                    StackOffset = StackSize
-                };
+                StackMap[name] = new StackVariable(name, tcc, StackSize);
                 int size = tcc.Size;
                 StackSize += (size + 3) & ~3; // Align to 4 bytes
             }
             else
             {
-                StackMap[name] = new StackVariable
-                {
-                    Name = name,
-                    Metadata = null,
-                    StackOffset = StackSize
-                };
+                StackMap[name] = new StackVariable(name, null, StackSize);
+
                 StackSize += 4; // primitives
             }
         }

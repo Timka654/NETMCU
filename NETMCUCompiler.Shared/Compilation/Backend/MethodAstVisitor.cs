@@ -4,7 +4,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System;
 using System.Security.Claims;
 
-namespace NETMCUCompiler.CodeBuilder
+namespace NETMCUCompiler.Shared.Compilation.Backend
 {
     public class MethodAstVisitor(MethodCompilationContext context) : CSharpSyntaxWalker
     {

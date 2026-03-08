@@ -1,4 +1,4 @@
-﻿namespace NETMCUCompiler.CodeBuilder
+﻿namespace NETMCUCompiler.Shared.Compilation
 {
     public enum CompilationContextTypeEnum
     {

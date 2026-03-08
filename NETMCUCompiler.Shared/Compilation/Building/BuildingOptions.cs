@@ -1,8 +1,6 @@
-﻿using NETMCUCompiler.CodeBuilder;
-using System.Text.Json;
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 
-namespace NETMCUCompiler
+namespace NETMCUCompiler.Shared.Compilation.Building
 {
     public sealed class BuildingInputConfigurationModel
     {
