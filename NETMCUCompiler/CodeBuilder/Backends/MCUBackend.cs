@@ -133,7 +133,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
 
                 int lenAddrReg = context.NextFreeRegister++;
                 EmitArithmeticOp(context, SyntaxKind.SubtractExpression, lenAddrReg, collectionReg, fourReg);
-                context.Emit($"@ Read array length");
+                EmitComment(context, "Read array length");
                 EmitMemoryAccess(context, true, lengthReg, lenAddrReg, 0);
                 context.NextFreeRegister -= 2;
 
@@ -225,7 +225,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
 
         public virtual void GenerateThrowStatement(MethodCompilationContext context, ExpressionSyntax expression)
         {
-            context.Emit("@ THROW EXECUTION");
+            EmitComment(context, "THROW EXECUTION");
             if (expression != null)
             {
                 // �������� ��������� ��������� ����� � r0 (������ �������� ��� ������)
@@ -233,7 +233,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             }
             else
             {
-                context.Emit("mov r0, #0 @ Rethrow or null exception");
+                EmitComment(context, "Rethrow or null exception");
                 EmitMovImmediate(context, 0, 0);
             }
 
@@ -341,11 +341,11 @@ namespace NETMCUCompiler.CodeBuilder.Backends
 
                 if (isStack)
                 {
-                    context.Emit($"@ Allocation: {varName} -> Stack[{stackOffset}]");
+                    EmitComment(context, $"Allocation: {varName} -> Stack[{stackOffset}]");
                 }
                 else
                 {
-                    context.Emit($"@ Allocation: {varName} -> r{registerIndex}");
+                    EmitComment(context, $"Allocation: {varName} -> r{registerIndex}");
                 }
 
                 bool hasInitializer = variable.Initializer != null;
@@ -935,19 +935,17 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                 {
                     string targetName = typeSymbol.ToDisplayString();
                     string symbolName = context.Class.Global.RegisterTypeLiteral(typeSymbol);
-                    context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
 
                     int tmpReg = context.NextFreeRegister++;
-                    context.Emit($"@ Write TypeHeader for Boxed {targetName}");
-                    context.Emit($"LDR r{tmpReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
-                    context.Bin.Write(new byte[8], 0, 8);
-                    context.Emit($"STR r{tmpReg}, [r0, #0]");
+                    EmitComment(context, $"Write TypeHeader for Boxed {targetName}");
+                    EmitLoadSymbolAddress(context, tmpReg, symbolName);
+                    EmitMemoryAccess(context, false, tmpReg, 0, 0); // false = STR
                     context.NextFreeRegister--;
                 }
 
-                if (size == 1) context.Emit($"STRB r{valReg}, [r0, #4]");
-                else if (size == 2) context.Emit($"STRH r{valReg}, [r0, #4]");
-                else context.Emit($"STR r{valReg}, [r0, #4]");
+                EmitOpWithImmediate(context, SyntaxKind.AddExpression, 0, 0, 4);
+                EmitStoreToArrayElement(context, size, valReg, 0);
+                EmitOpWithImmediate(context, SyntaxKind.SubtractExpression, 0, 0, 4);
 
                 if (targetReg != 0) EmitMovRegister(context, targetReg, 0);
                 context.NextFreeRegister--;
@@ -970,9 +968,10 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                     else if (destType.SpecialType == SpecialType.System_Int16 || destType.SpecialType == SpecialType.System_UInt16 || destType.SpecialType == SpecialType.System_Char) size = 2;
                 }
 
-                if (size == 1) context.Emit($"LDRB r{targetReg}, [r{objReg}, #4]");
-                else if (size == 2) context.Emit($"LDRH r{targetReg}, [r{objReg}, #4]");
-                else context.Emit($"LDR r{targetReg}, [r{objReg}, #4]");
+                int tmpAddr = context.NextFreeRegister++;
+                EmitOpWithImmediate(context, SyntaxKind.AddExpression, tmpAddr, objReg, 4);
+                EmitLoadFromArrayElement(context, size, targetReg, tmpAddr);
+                context.NextFreeRegister--;
 
                 context.NextFreeRegister--;
                 return;
@@ -991,7 +990,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                     {
                         Console.WriteLine($"[DEBUG-CONV] CAST UNBOXING on {expr} from {inputType.Name} to {targetType.Name}");
                         EmitExpressionInternal(context, ce.Expression, targetReg, tempOffset);
-                        context.Emit($"LDR r{targetReg}, [r{targetReg}, #4] @ CastUnbox Extract Payload");
+                        EmitMemoryAccess(context, true, targetReg, targetReg, 4);
                         return;
                     }
                 }
@@ -1027,10 +1026,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                 else if (constOpt.Value is string stringValue)
                 {
                     var stringSymbol = context.Class.Global.RegisterStringLiteral(stringValue);
-                    context.AddDataRelocation(stringSymbol);
-                    context.Emit($"LDR r{targetReg}, ={stringSymbol} ; (placeholder for MOVW/MOVT)");
-                    context.Bytecode((byte)targetReg);
-                    context.Bin.Write(new byte[7], 0, 7);
+                    EmitLoadSymbolAddress(context, targetReg, stringSymbol);
                     return;
                 }
                 else
@@ -1058,10 +1054,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                     if (stringSymbol == null)
                         throw new InvalidOperationException($"String literal '{stringValue}' was not found in the compilation context.");
 
-                    context.AddDataRelocation(stringSymbol);
-                    context.Emit($"LDR r{targetReg}, ={stringSymbol} ; (placeholder for MOVW/MOVT)");
-                    context.Bytecode((byte)targetReg);
-                    context.Bin.Write(new byte[7], 0, 7);
+                    EmitLoadSymbolAddress(context, targetReg, stringSymbol);
                 }
                 else
                 {
@@ -1090,14 +1083,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                     }
                     else
                     {
-                        // Инструкция MOV Rd, Rm (копирование регистра в регистр)
-                        // Thumb-16: 0x4600 | (src << 3) | target (с учетом High Registers флага, но r4-r11 влезают)
-                        context.Emit($"MOV r{targetReg}, r{srcReg}");
-                        ushort opcode = (ushort)(0x4600 | (srcReg << 3) | (targetReg & 0x7));
-                        if (targetReg > 7) opcode |= 0x0080; // Коррекция для r8-r11 (High register bit)
-
-                        context.Bytecode((byte)(opcode & 0xFF));
-                        context.Bytecode((byte)(opcode >> 8));
+                        EmitMovRegister(context, targetReg, srcReg);
                     }
                 }
                 else if (context.StackMap.TryGetValue(id.Identifier.Text, out var sv))
@@ -1124,14 +1110,13 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                     if (targetType != null && context.Class.Global.BuildingContext.Options?.TypeHeader == true)
                     {
                         int typeReg = context.NextFreeRegister++;
-                        context.Emit($"LDR r{typeReg}, [r{objReg}, #0] @ read TypeHeader");
+                        EmitComment(context, "read TypeHeader");
+                        EmitMemoryAccess(context, true, typeReg, objReg, 0);
 
                         string symbolName = context.Class.Global.RegisterTypeLiteral(targetType);
-                        context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
 
                         int targetTypeReg = context.NextFreeRegister++;
-                        context.Emit($"LDR r{targetTypeReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
-                        context.Bin.Write(new byte[8], 0, 8);
+                        EmitLoadSymbolAddress(context, targetTypeReg, symbolName);
 
                         EmitCompare(context, typeReg, targetTypeReg);
                         EmitBranch(context, falseLabel, "NE");
@@ -1203,7 +1188,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                 EmitExpressionValue(context, ternary.WhenTrue, targetReg, tempOffset);
 
                 // Прыгаем в конец, чтобы не выполнять ветку FALSE
-                context.Emit($"B {endLabel}");
+                EmitJump(context, endLabel);
 
                 // 3. Ветка FALSE
                 context.MarkLabel(falseLabel);
@@ -1230,21 +1215,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                         elementSize = Math.Max(1, elType.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).Count() * 4);
                 }
 
-                if (elementSize == 1)
-                {
-                    context.Emit($"LDRB r{targetReg}, [r{addrReg}, #0]");
-                    context.Write16((ushort)(0x7800 | ((addrReg & 0x7) << 3) | (targetReg & 0x7)));
-                }
-                else if (elementSize == 2)
-                {
-                    context.Emit($"LDRH r{targetReg}, [r{addrReg}, #0]");
-                    context.Write16((ushort)(0x8800 | ((addrReg & 0x7) << 3) | (targetReg & 0x7)));
-                }
-                else
-                {
-                    context.Emit($"LDR r{targetReg}, [r{addrReg}, #0]");
-                    context.Write16((ushort)(0x6800 | ((addrReg & 0x7) << 3) | (targetReg & 0x7)));
-                }
+                EmitLoadFromArrayElement(context, elementSize, targetReg, addrReg);
 
                 context.NextFreeRegister--;
             }
@@ -1339,75 +1310,20 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                     if (size == 0) size = 4; 
                 }
 
-                EmitMovImmediate(context, 0, size);
-                EmitCall(context, "NETMCU__Memory__Alloc", isStatic: true, isNative: true);
-
-                if (hasHeader)
-                {
-                    string targetName = typeSymbol.ToDisplayString();
-                    string symbolName = context.Class.Global.RegisterTypeLiteral(typeSymbol);
-                    context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
-
-                    int tmpReg = context.NextFreeRegister++;
-                    context.Emit($"LDR r{tmpReg}, ={symbolName} ; (placeholder for MOVW/MOVT)");
-                    context.Bin.Write(new byte[8], 0, 8);
-                    context.Emit($"STR r{tmpReg}, [r0, #0]");
-                    context.NextFreeRegister--;
-                }
-
-                if (targetReg != 0) EmitMovRegister(context, targetReg, 0);
-
                 var ctorSymbol = context.SemanticModel.GetSymbolInfo(objectCreation).Symbol as IMethodSymbol;
-                if (ctorSymbol != null && !ctorSymbol.IsImplicitlyDeclared && objectCreation.ArgumentList != null)
-                {
-                    var args = objectCreation.ArgumentList.Arguments;
-                    List<int> argRegs = new();
-                    for (int i = 0; i < args.Count; i++)
-                    {
-                        var argument = args[i];
-                        int safeReg = context.NextFreeRegister++;
-                        if (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) || argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword))
-                            EmitAddressOf(context, argument.Expression, safeReg, tempOffset);
-                        else
-                            EmitExpressionValue(context, argument.Expression, safeReg, tempOffset);
-                        argRegs.Add(safeReg);
-                    }
+                string symbolName = hasHeader && typeSymbol != null ? context.Class.Global.RegisterTypeLiteral(typeSymbol) : "";
 
-                    int stackArgsCount = 0;
-                    for (int i = args.Count - 1; i >= 0; i--)
-                    {
-                        int targetArgReg = i + 1;
-                        if (targetArgReg > 3)
-                        {
-                            context.Emit($"PUSH {{r{argRegs[i]}}}");
-                            EmitPush(context, argRegs[i]);
-                            stackArgsCount++;
-                        }
-                    }
+                var info = new ObjectCreationInfo(
+                    TypeSymbol: typeSymbol,
+                    CtorSymbol: ctorSymbol,
+                    Arguments: objectCreation.ArgumentList?.Arguments,
+                    HasTypeHeader: hasHeader,
+                    Size: size,
+                    SymbolName: symbolName,
+                    TargetReg: targetReg
+                );
 
-                    if (targetReg != 0) EmitMovRegister(context, 0, targetReg);
-
-                    for (int i = 0; i < args.Count; i++)
-                    {
-                        int targetArgReg = i + 1;
-                        if (targetArgReg <= 3)
-                            if (argRegs[i] != targetArgReg) EmitMovRegister(context, targetArgReg, argRegs[i]);
-                    }
-
-                    EmitCall(context, ctorSymbol.ToDisplayString(), isStatic: false, isNative: false);
-
-                    context.NextFreeRegister -= args.Count;
-
-                    if (stackArgsCount > 0)
-                    {
-                        context.Emit($"ADD SP, SP, #{stackArgsCount * 4}");
-                        uint imm12 = (uint)(stackArgsCount * 4);
-                        uint op = 0xF10D0D00 | (((imm12 >> 11) & 1) << 26) | (((imm12 >> 8) & 7) << 12) | (imm12 & 0xFF);
-                        context.Write32(op);
-                    }
-
-                    if (targetReg != 0) EmitMovRegister(context, targetReg, 0); // restoring allocated ptr
-                }
+                EmitObjectCreation(context, info, tempOffset);
             }
             else if (expr is InvocationExpressionSyntax invocation)
             {
@@ -1524,7 +1440,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                 bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
                 int lengthOffset = typeHeader ? 4 : 0;
 
-                context.Emit($"@ Load Array Length");
+                EmitComment(context, "Load Array Length");
                 EmitMemoryAccess(context, true, lengthReg, targetReg, lengthOffset);
 
                 string okLabel = context.NextLabel("BOUNDS_OK");
@@ -1578,5 +1494,68 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         public abstract void ResolveJumps(MethodCompilationContext context);
         public abstract void PatchCall(byte[] binary, int offset, int jumpOffset);
         public abstract void PatchDataAddress(byte[] binary, int offset, uint value);
+
+        public virtual void EmitComment(MethodCompilationContext context, string comment)
+        {
+            // Default no-op. Backends can override to write comments (e.g. context.Emit($"@ {comment}"))
+        }
+
+        public virtual void CompileMethod(MethodCompilationContext method)
+        {
+            if (method.NativeName != null) return;
+
+            var methodSyntax = method.MethodSyntax as MethodDeclarationSyntax;
+            var localFuncSyntax = method.MethodSyntax as LocalFunctionStatementSyntax;
+
+            var body = methodSyntax?.Body ?? localFuncSyntax?.Body;
+            var expressionBody = methodSyntax?.ExpressionBody ?? localFuncSyntax?.ExpressionBody;
+
+            if (body == null && expressionBody == null)
+            {
+                return;
+            }
+            var modifiers = methodSyntax?.Modifiers ?? localFuncSyntax?.Modifiers;
+
+            // СБОР ЛОКАЛЬНЫХ КОНСТАНТ МЕТОДА
+            var localConsts = method.MethodSyntax.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
+                                .Where(s => s.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword)));
+
+            foreach (var localConst in localConsts)
+            {
+                foreach (var v in localConst.Declaration.Variables)
+                {
+                    if (v.Initializer?.Value is LiteralExpressionSyntax lit)
+                        method.RegisterConstant(v.Identifier.Text, method.Class.Global.Backend.ParseLiteral(method.Class.Global, lit));
+                }
+            }
+
+            var methodSymbol = method.SemanticModel.GetDeclaredSymbol(method.MethodSyntax) as IMethodSymbol;
+
+            bool isStatic = modifiers.Value.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
+            var parameters = methodSymbol.Parameters;
+
+            var declarations = method.MethodSyntax.DescendantNodes().OfType<VariableDeclarationSyntax>();
+            foreach (var decl in declarations)
+            {
+                var typeSymbol = method.SemanticModel.GetTypeInfo(decl.Type).Type;
+                string typeName = typeSymbol?.ToDisplayString() ?? decl.Type.ToString();
+
+                foreach (var v in decl.Variables)
+                {
+                    method.AllocateOnStack(v.Identifier.Text, typeName);
+                }
+            }
+
+            GenerateMethodPrologue(method, !isStatic, parameters);
+
+            var builder = new MethodAstVisitor(method);
+            if (body != null)
+                builder.Visit(body);
+            if (expressionBody != null)
+                builder.Visit(expressionBody);
+
+            GenerateMethodEpilogue(method);
+            ResolveJumps(method);
+        }
     }
 }

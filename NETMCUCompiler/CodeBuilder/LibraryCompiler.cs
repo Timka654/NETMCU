@@ -304,80 +304,9 @@ namespace NETMCUCompiler.CodeBuilder
 
                 foreach (var method in item.Methods)
                 {
-                    CompileMethod(method.Value);
+                    context.Backend.CompileMethod(method.Value);
                 }
             }
-        }
-
-        private static void CompileMethod(MethodCompilationContext method)
-        {
-            if (method.NativeName != null) return;
-
-            var methodSyntax = method.MethodSyntax as MethodDeclarationSyntax;
-            var localFuncSyntax = method.MethodSyntax as LocalFunctionStatementSyntax;
-
-            var body = methodSyntax?.Body ?? localFuncSyntax?.Body;
-            var expressionBody = methodSyntax?.ExpressionBody ?? localFuncSyntax?.ExpressionBody;
-
-            if (body == null && expressionBody == null)
-            //if (body == null && expressionBody == null && !methodSyntax.AttributeLists.Any(x=>x.Attributes.Any(a => a.Name.ToString() == "NativeCall")))
-            {
-                return;
-            }
-            var modifiers = methodSyntax?.Modifiers ?? localFuncSyntax?.Modifiers;
-
-            // СБОР ЛОКАЛЬНЫХ КОНСТАНТ МЕТОДА (вторая часть BuildAsm)
-            var localConsts = method.MethodSyntax.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
-                                .Where(s => s.Modifiers.Any(m => m.IsKind(SyntaxKind.ConstKeyword)));
-
-            foreach (var localConst in localConsts)
-            {
-                foreach (var v in localConst.Declaration.Variables)
-                {
-                    if (v.Initializer?.Value is LiteralExpressionSyntax lit)
-                        method.RegisterConstant(v.Identifier.Text, method.Class.Global.Backend.ParseLiteral(method.Class.Global, lit));
-                }
-            }
-
-
-            var methodSymbol = method.SemanticModel.GetDeclaredSymbol(method.MethodSyntax) as IMethodSymbol;
-
-            // Полное имя: Namespace.ClassName.MethodName
-            string fullName = methodSymbol.ToDisplayString();
-
-            bool isStatic = modifiers.Value.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
-            var parameters = methodSymbol.Parameters;
-
-            var declarations = method.MethodSyntax.DescendantNodes().OfType<VariableDeclarationSyntax>();
-            foreach (var decl in declarations)
-            {
-                // 1. Пытаемся получить символ типа через семантическую модель
-                var typeSymbol = method.SemanticModel.GetTypeInfo(decl.Type).Type;
-
-                // Если по какой-то причине символ не определен, откатываемся к ToString()
-                // Но для 'var' здесь уже будет реальное имя (например, GPIO_InitTypeDef)
-                string typeName = typeSymbol?.ToDisplayString() ?? decl.Type.ToString();
-
-                foreach (var v in decl.Variables)
-                {
-                    // Теперь ctx получит правильное имя типа даже для var
-                    method.AllocateOnStack(v.Identifier.Text, typeName);
-                }
-            }
-
-            // Настраиваем фрейм, теперь передавая параметры
-            method.Class.Global.Backend.GenerateMethodPrologue(method, !isStatic, parameters);
-
-            // Пользуемся нашим старым добрым билдером для внутренностей
-            var builder = new MethodAstVisitor(method);
-            if (body != null)
-                builder.Visit(body);
-            if (expressionBody != null)
-                builder.Visit(expressionBody);
-
-            method.Class.Global.Backend.GenerateMethodEpilogue(method);
-            // Move ResolveJumps logic to PostProcess method on Backend maybe?
-            method.Class.Global.Backend.ResolveJumps(method);
         }
     }
 }

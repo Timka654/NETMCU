@@ -210,6 +210,11 @@ namespace NETMCUCompiler.CodeBuilder.Backends
         public override void PatchCall(byte[] binary, int offset, int jumpOffset) => PatchThumb2BL(binary, offset, jumpOffset);
         public override void PatchDataAddress(byte[] binary, int offset, uint value) => PatchMovwMovt(binary, offset, value);
 
+        public override void EmitComment(MethodCompilationContext context, string comment)
+        {
+            context.Emit($"@ {comment}");
+        }
+
         public override void GenerateTryStatement(MethodCompilationContext context, Action generateTryBlock, Action<CatchClauseSyntax> generateCatchBlock, Action generateFinallyBlock, SyntaxList<CatchClauseSyntax> catches, FinallyClauseSyntax finallyClause)
         {
             context.Emit("@ TRY BLOCK START");
