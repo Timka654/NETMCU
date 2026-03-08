@@ -2,6 +2,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using NETMCUCompiler.Shared.Compilation.Backend;
 using NSL.Utils.CommandLine;
 using NSL.Utils.CommandLine.CLHandles;
 using NSL.Utils.CommandLine.CLHandles.Arguments;
@@ -28,6 +29,7 @@ namespace NETMCUCompiler
     [CLArgument("flash", typeof(CLContainsType), true, Description = "Flag for flash after build")]
     [CLArgument("flasher", typeof(string), true, Description = "The flasher to use for flashing")]
     [CLArgument("flash-port", typeof(ushort), true, Description = "The flash port to use for flashing")]
+    [CLArgument("output-type", typeof(string), true, Description = "The output type for the build")]
     public class BuildCliHandler : NSL.Utils.CommandLine.CLHandles.CLHandler
     {
         public override string Command => "build";
@@ -38,12 +40,49 @@ namespace NETMCUCompiler
 
         [CLArgumentValue("flasher")] public string Flasher { get; set; }
         [CLArgumentValue("flash-port")] public ushort FlashPort { get; set; }
+        [CLArgumentValue("output-type", nameof(BuildingOutputTypeEnum.Executable))] public string OutputType { get; set; }
 
-        public override Task<CommandReadStateEnum> ProcessCommand(CommandLineArgsReader reader, CLArgumentValues values)
+        public override async Task<CommandReadStateEnum> ProcessCommand(CommandLineArgsReader reader, CLArgumentValues values)
         {
             base.ProcessingAutoArgs(values);
 
-            return base.ProcessCommand(reader, values);
+            if (!Enum.TryParse<BuildingOutputTypeEnum>(OutputType, true, out var _outputType))
+                return CommandReadStateEnum.Failed;
+
+            MCUBackend? backend = null;
+
+
+            if(backend == null)
+                return CommandReadStateEnum.Failed;
+
+
+            if (!MSBuildLocator.IsRegistered)
+                MSBuildLocator.RegisterDefaults();
+
+            SolutionContext sc = new SolutionContext();
+
+            sc.StartupProject = new BuildingContext(Path, _outputType, sc, backend);
+
+            sc.Projects.Add(Path, sc.StartupProject);
+
+
+            await sc.StartupProject.LoadAsync();
+
+            if (!await sc.StartupProject.BuildCore())
+            {
+                Console.WriteLine("Build failed");
+                return CommandReadStateEnum.Failed;
+            }
+
+            if (!await sc.StartupProject.Compile())
+            {
+                Console.WriteLine("Compile failed");
+                return CommandReadStateEnum.Failed;
+            }
+
+            Console.WriteLine("Compile succeeded");
+
+            return await base.ProcessCommand(reader, values);
         }
     }
 
@@ -75,28 +114,6 @@ namespace NETMCUCompiler
             //else if (args.Any(a => a.Contains("dfu"))) progType = ProgrammerType.DfuUtil;
 
             // 1. Инициализация MSBuild (нужно вызвать один раз при старте)
-            if (!MSBuildLocator.IsRegistered)
-                MSBuildLocator.RegisterDefaults();
-
-            SolutionContext sc = new SolutionContext();
-
-            sc.StartupProject = new BuildingContext(projectPath, BuildingOutputTypeEnum.Executable, sc);
-            sc.Projects.Add(projectPath, sc.StartupProject);
-
-            await sc.StartupProject.LoadAsync();
-
-            if(!await sc.StartupProject.BuildCore())
-            {
-                Console.WriteLine("Build failed");
-                return;
-            }
-
-            if(!await sc.StartupProject.Compile())
-            {
-                Console.WriteLine("Compile failed");
-                return;
-            }
-            Console.WriteLine("Compile succeeded");
 
             //if (shouldFlash) 
             //{
