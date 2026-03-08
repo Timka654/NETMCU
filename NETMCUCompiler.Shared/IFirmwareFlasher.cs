@@ -4,8 +4,12 @@ using System.Text;
 
 namespace NETMCUCompiler.Shared
 {
+    public record FirmwareFlashArgument(string name, bool required, string description);
+
     public interface IFirmwareFlasher
     {
-        Task<bool> FlashAsync(string firmwarePath, uint address, string portName);
+        IEnumerable<FirmwareFlashArgument> GetArguments();
+
+        Task<bool> FlashAsync(string firmwarePath, uint address, Dictionary<string,object> args);
     }
 }
