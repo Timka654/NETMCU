@@ -707,54 +707,42 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             context.NextFreeRegister -= 2; 
         }
 
-        public override void EmitDelegateCreation(MethodCompilationContext context, Microsoft.CodeAnalysis.IMethodSymbol targetMethod, Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax nodeExpr, Microsoft.CodeAnalysis.ITypeSymbol delegateType, int targetReg, int tempOffset)
+        public override void EmitDelegateCreation(MethodCompilationContext context, DelegateCreationInfo info, int tempOffset)
         {
-            int size = context.Class.Global.BuildingContext.Options?.TypeHeader == true ? 12 : 8; // delegate size is 8 bytes + 4 for header
-            EmitMovImmediate(context, 0, size);
+            EmitMovImmediate(context, 0, info.Size);
 
             EmitCall(context, "NETMCU__Memory__Alloc", isStatic: true, isNative: true);
 
-            bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
-            if (typeHeader)
+            if (info.HasTypeHeader)
             {
-                string targetName = delegateType.ToDisplayString();
-                string symbolName = context.Class.Global.RegisterTypeLiteral(delegateType);
-                context.Class.Global.AddDataRelocation(context, symbolName, (int)context.Bin.Length);
+                context.Class.Global.AddDataRelocation(context, info.SymbolName, (int)context.Bin.Length);
 
                 int tmpReg = context.NextFreeRegister++;
-                EmitLoadSymbolAddress(context, tmpReg, symbolName);
+                EmitLoadSymbolAddress(context, tmpReg, info.SymbolName);
                 context.Emit($"STR r{tmpReg}, [r0, #0]");
                 context.Write16((ushort)(0x6000 | ((0 & 0x7) << 3) | (tmpReg & 0x7)));
                 context.NextFreeRegister--;
             }
 
-            int targetOffset = typeHeader ? 4 : 0;
-            int ptrOffset = targetOffset + 4;
-            if (context.Class.Global.Childs.TryGetValue("System.Delegate", out var delTypeCtx) && delTypeCtx is TypeCompilationContext delTcc)
-            {
-                delTcc.FieldOffsets.TryGetValue("Target", out targetOffset);
-                delTcc.FieldOffsets.TryGetValue("MethodPtr", out ptrOffset);
-            }
-
-            int delObjReg = targetReg == 0 ? 0 : targetReg;
-            if (targetReg != 0) EmitMovRegister(context, delObjReg, 0);
+            int delObjReg = info.TargetReg == 0 ? 0 : info.TargetReg;
+            if (info.TargetReg != 0) EmitMovRegister(context, delObjReg, 0);
 
             int methodValReg = context.NextFreeRegister++;
-            string methodName = targetMethod.ToDisplayString();
-            context.Class.Global.AddRelocation(context, methodName, targetMethod.IsStatic, false, (int)context.Bin.Length);
+            string methodName = info.TargetMethod.ToDisplayString();
+            context.Class.Global.AddRelocation(context, methodName, info.TargetMethod.IsStatic, false, (int)context.Bin.Length);
             EmitLoadSymbolAddress(context, methodValReg, methodName);
-            
-            context.Emit($"STR r{methodValReg}, [r{delObjReg}, #{ptrOffset}]");
-            context.Write16((ushort)(0x6000 | ((ptrOffset/4) << 6) | ((delObjReg & 0x7) << 3) | (methodValReg & 0x7)));
+
+            context.Emit($"STR r{methodValReg}, [r{delObjReg}, #{info.PtrOffset}]");
+            context.Write16((ushort)(0x6000 | ((info.PtrOffset/4) << 6) | ((delObjReg & 0x7) << 3) | (methodValReg & 0x7)));
 
             int targetValReg = context.NextFreeRegister++;
-            if (targetMethod.IsStatic)
+            if (info.TargetMethod.IsStatic)
             {
                 EmitMovImmediate(context, targetValReg, 0);
             }
             else
             {
-                if (nodeExpr is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax delMemberAccess)
+                if (info.NodeExpression is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax delMemberAccess)
                 {
                     EmitExpressionValue(context, delMemberAccess.Expression, targetValReg, tempOffset);
                 }
@@ -764,8 +752,8 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                     context.Write16((ushort)(0x4600 | (4 << 3) | (targetValReg & 0x7)));
                 }
             }
-            context.Emit($"STR r{targetValReg}, [r{delObjReg}, #{targetOffset}]");
-            context.Write16((ushort)(0x6000 | ((targetOffset/4) << 6) | ((delObjReg & 0x7) << 3) | (targetValReg & 0x7)));
+            context.Emit($"STR r{targetValReg}, [r{delObjReg}, #{info.TargetOffset}]");
+            context.Write16((ushort)(0x6000 | ((info.TargetOffset/4) << 6) | ((delObjReg & 0x7) << 3) | (targetValReg & 0x7)));
 
             context.NextFreeRegister -= 2;
         }

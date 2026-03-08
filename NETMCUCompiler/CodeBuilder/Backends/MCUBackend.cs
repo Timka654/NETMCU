@@ -802,7 +802,7 @@ namespace NETMCUCompiler.CodeBuilder.Backends
             return false;
         }
 
-        public abstract void EmitDelegateCreation(MethodCompilationContext context, IMethodSymbol targetMethod, ExpressionSyntax nodeExpr, ITypeSymbol delegateType, int targetReg, int tempOffset);
+        public abstract void EmitDelegateCreation(MethodCompilationContext context, DelegateCreationInfo info, int tempOffset);
 
         public virtual void EmitArithmetic(BinaryExpressionSyntax node, int targetReg, MethodCompilationContext context, int tempOffset = 0)
         {
@@ -1010,7 +1010,31 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                 var convertedType = typeInfo.ConvertedType;
                 if (convertedType != null && convertedType.TypeKind == TypeKind.Delegate)
                 {
-                    EmitDelegateCreation(context, possibleMethod, expr, convertedType, targetReg, tempOffset);
+                    bool typeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
+                    int size = typeHeader ? 12 : 8;
+                    string symbolName = typeHeader ? context.Class.Global.RegisterTypeLiteral(convertedType) : "";
+
+                    int targetOffset = typeHeader ? 4 : 0;
+                    int ptrOffset = targetOffset + 4;
+                    if (context.Class.Global.Childs.TryGetValue("System.Delegate", out var delTypeCtx) && delTypeCtx is TypeCompilationContext delTcc)
+                    {
+                        delTcc.FieldOffsets.TryGetValue("Target", out targetOffset);
+                        delTcc.FieldOffsets.TryGetValue("MethodPtr", out ptrOffset);
+                    }
+
+                    var info = new DelegateCreationInfo(
+                        TypeSymbol: convertedType,
+                        TargetMethod: possibleMethod,
+                        NodeExpression: expr,
+                        HasTypeHeader: typeHeader,
+                        SymbolName: symbolName,
+                        TargetOffset: targetOffset,
+                        PtrOffset: ptrOffset,
+                        Size: size,
+                        TargetReg: targetReg
+                    );
+
+                    EmitDelegateCreation(context, info, tempOffset);
                     return;
                 }
             }
@@ -1294,7 +1318,31 @@ namespace NETMCUCompiler.CodeBuilder.Backends
                     var targetMethodCtor = symInfo as IMethodSymbol ?? memGrp as IMethodSymbol;
                     if (targetMethodCtor != null)
                     {
-                        EmitDelegateCreation(context, targetMethodCtor, ctorArg, typeSymbol, targetReg, tempOffset);
+                        bool isTypeHeader = context.Class.Global.BuildingContext.Options?.TypeHeader == true;
+                        int delegateSize = isTypeHeader ? 12 : 8;
+                        string delegateSymbolName = isTypeHeader ? context.Class.Global.RegisterTypeLiteral(typeSymbol) : "";
+
+                        int tOffset = isTypeHeader ? 4 : 0;
+                        int pOffset = tOffset + 4;
+                        if (context.Class.Global.Childs.TryGetValue("System.Delegate", out var delTypeCtx) && delTypeCtx is TypeCompilationContext delTcc)
+                        {
+                            delTcc.FieldOffsets.TryGetValue("Target", out tOffset);
+                            delTcc.FieldOffsets.TryGetValue("MethodPtr", out pOffset);
+                        }
+
+                        var delInfo = new DelegateCreationInfo(
+                            TypeSymbol: typeSymbol,
+                            TargetMethod: targetMethodCtor,
+                            NodeExpression: ctorArg,
+                            HasTypeHeader: isTypeHeader,
+                            SymbolName: delegateSymbolName,
+                            TargetOffset: tOffset,
+                            PtrOffset: pOffset,
+                            Size: delegateSize,
+                            TargetReg: targetReg
+                        );
+
+                        EmitDelegateCreation(context, delInfo, tempOffset);
                         return;
                     }
                 }
