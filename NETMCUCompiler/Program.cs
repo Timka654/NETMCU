@@ -49,11 +49,13 @@ namespace NETMCUCompiler
             if (!Enum.TryParse<BuildingOutputTypeEnum>(OutputType, true, out var _outputType))
                 return CommandReadStateEnum.Failed;
 
-            MCUBackend? backend = null;
-
+            MCUBackend? backend = ExtensionManager.Instance.CreateBackend(Backend);
 
             if(backend == null)
+            {
+                Console.WriteLine($"Backend '{Backend}' not found. Available backends: " + string.Join(", ", ExtensionManager.Instance.Backends.Keys));
                 return CommandReadStateEnum.Failed;
+            }
 
 
             if (!MSBuildLocator.IsRegistered)
@@ -82,6 +84,101 @@ namespace NETMCUCompiler
 
             Console.WriteLine("Compile succeeded");
 
+            if (Flash)
+            {
+                var flasherStr = string.IsNullOrEmpty(Flasher) ? "st-flash" : Flasher; // default example
+                var flasher = ExtensionManager.Instance.CreateFlasher(flasherStr);
+
+                if (flasher != null)
+                {
+                    string binPath = System.IO.Path.Combine(sc.StartupProject.mcuBinPath, "output.bin");
+                    uint flashBase = 0x08000000;
+                    var flashBaseStr = sc.StartupProject.Options?.Configurations?["FLASH_BASE_ADDRESS"];
+                    if (flashBaseStr != null) {
+                        flashBase = flashBaseStr.StartsWith("0x") ? uint.Parse(flashBaseStr.TrimStart('0', 'x'), System.Globalization.NumberStyles.HexNumber) : uint.Parse(flashBaseStr);
+                    }
+
+                    if (await flasher.FlashAsync(binPath, flashBase, FlashPort.ToString()))
+                    {
+                        Console.WriteLine("Flash succeeded");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Flash failed");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"Flasher '{flasherStr}' not found.");
+                }
+            }
+
+            return await base.ProcessCommand(reader, values);
+        }
+    }
+
+    [CLHandleSelect("root")]
+    [CLArgument("flasher", typeof(string), Description = "The flasher to use for flashing")]
+    [CLArgument("path", typeof(string), Description = "Path to the generic .bin to flash")]
+    [CLArgument("address", typeof(string), true, Description = "Flash base address (e.g. 0x08000000)")]
+    [CLArgument("port", typeof(string), true, Description = "Flash port")]
+    public class FlashCliHandler : NSL.Utils.CommandLine.CLHandles.CLHandler
+    {
+        public override string Command => "flash";
+
+        [CLArgumentValue("flasher")] public string Flasher { get; set; }
+        [CLArgumentValue("path")] public string Path { get; set; }
+        [CLArgumentValue("address")] public string Address { get; set; }
+        [CLArgumentValue("port")] public string Port { get; set; }
+
+        public override async Task<CommandReadStateEnum> ProcessCommand(CommandLineArgsReader reader, CLArgumentValues values)
+        {
+            base.ProcessingAutoArgs(values);
+
+            var flasher = ExtensionManager.Instance.CreateFlasher(Flasher);
+            if (flasher == null)
+            {
+                Console.WriteLine($"Flasher '{Flasher}' not found. Available flashers: " + string.Join(", ", ExtensionManager.Instance.Flashers.Keys));
+                return CommandReadStateEnum.Failed;
+            }
+
+            uint flashBase = 0x08000000;
+            if (!string.IsNullOrEmpty(Address))
+            {
+                flashBase = Address.StartsWith("0x") ? uint.Parse(Address.TrimStart('0', 'x'), System.Globalization.NumberStyles.HexNumber) : uint.Parse(Address);
+            }
+
+            if (await flasher.FlashAsync(Path, flashBase, Port))
+            {
+                Console.WriteLine("Flash succeeded!");
+            }
+            else
+            {
+                Console.WriteLine("Flash failed.");
+            }
+
+            return await base.ProcessCommand(reader, values);
+        }
+    }
+
+    [CLHandleSelect("root")]
+    [CLArgument("type", typeof(string), Description = "Type of install (nuget, git, zip, curl...)")]
+    [CLArgument("source", typeof(string), Description = "Source locator (URL, package name, etc.)")]
+    public class InstallCliHandler : NSL.Utils.CommandLine.CLHandles.CLHandler
+    {
+        public override string Command => "install";
+
+        [CLArgumentValue("type")] public string Type { get; set; }
+        [CLArgumentValue("source")] public string Source { get; set; }
+
+        public override async Task<CommandReadStateEnum> ProcessCommand(CommandLineArgsReader reader, CLArgumentValues values)
+        {
+            base.ProcessingAutoArgs(values);
+
+            Console.WriteLine($"Installing extension from {Type}: {Source}");
+            // TODO: implement logic
+            Console.WriteLine("Not implemented yet.");
+
             return await base.ProcessCommand(reader, values);
         }
     }
@@ -93,41 +190,25 @@ namespace NETMCUCompiler
             CommandLineArgsReader? reader = default;
 
 #if DEBUG
+            if (args != null && args.Length > 0)
+            {
+                reader = new CommandLineArgsReader(new CommandLineArgs(args, false));
+            }
+            else
+            {
+                var projectPath = Path.GetFullPath("../../../../devmcu/devmcu.csproj"); // temp
+                if (!File.Exists(projectPath))
+                    projectPath = Path.GetFullPath("../devmcu/devmcu.csproj");
+                if (!File.Exists(projectPath))
+                    projectPath = Path.GetFullPath("devmcu/devmcu.csproj");
 
-            var projectPath = Path.GetFullPath("../../../../devmcu/devmcu.csproj"); // temp
-            if (!File.Exists(projectPath))
-                projectPath = Path.GetFullPath("../devmcu/devmcu.csproj");
-            if (!File.Exists(projectPath))
-                projectPath = Path.GetFullPath("devmcu/devmcu.csproj");
-
-            reader = new CommandLineArgsReader(new CommandLineArgs(new[] { "build", "--path", projectPath }, false));
+                // Provide cortex-m4 as default backend for testing
+                reader = new CommandLineArgsReader(new CommandLineArgs(new[] { "build", "--path", projectPath, "--backend", "cortex-m4" }, false));
+            }
 #else
-            reader = new CommandLineArgsReader(new CommandLineArgs());
+            reader = new CommandLineArgsReader(new CommandLineArgs(args ?? new string[0], false));
 #endif
-            await CLHandler<RootCliHandler>.Instance.ProcessCommand(new CommandLineArgsReader(new CommandLineArgs()));
-            //// Example simple arguments trace
-            //bool shouldFlash = args.Contains("--flash");
-            //ProgrammerType progType = ProgrammerType.STFlash;
-            //if (args.Any(a => a.Contains("openocd"))) progType = ProgrammerType.OpenOCD;
-            //else if (args.Any(a => a.Contains("cubeprogrammer"))) progType = ProgrammerType.STM32CubeProgrammer;
-            //else if (args.Any(a => a.Contains("stlinkcli"))) progType = ProgrammerType.STLinkCLI;
-            //else if (args.Any(a => a.Contains("dfu"))) progType = ProgrammerType.DfuUtil;
-
-            // 1. Инициализация MSBuild (нужно вызвать один раз при старте)
-
-            //if (shouldFlash) 
-            //{
-            //    string binPath = Path.Combine(sc.StartupProject.mcuBinPath, "output.bin");
-
-            //    uint flashBase = 0x08000000;
-            //    var flashBaseStr = sc.StartupProject.Options?.Configurations?["FLASH_BASE_ADDRESS"];
-            //    if (flashBaseStr != null) {
-            //        flashBase = flashBaseStr.StartsWith("0x") ? uint.Parse(flashBaseStr.TrimStart('0', 'x'), System.Globalization.NumberStyles.HexNumber) : uint.Parse(flashBaseStr);
-            //    }
-
-            //    Console.WriteLine($"\nFlashing the firmware using {progType}...");
-            //    FirmwareFlasher.Flash(binPath, flashBase, progType);
-            //}
+            await CLHandler<RootCliHandler>.Instance.ProcessCommand(reader.Value);
         }
     }
 

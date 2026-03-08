@@ -33,7 +33,7 @@ namespace NETMCUCompiler
                 {
                     if (!solutionContext.Projects.TryGetValue(referencedProject.FilePath, out var existingContext))
                     {
-                        existingContext = new BuildingContext(referencedProject.FilePath, BuildingOutputTypeEnum.Library, solutionContext);
+                        existingContext = new BuildingContext(referencedProject.FilePath, BuildingOutputTypeEnum.Library, solutionContext, backend);
 
                         solutionContext.Projects[referencedProject.FilePath] = existingContext;
 

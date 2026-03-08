@@ -100,4 +100,49 @@ namespace NETMCUCompiler
             }
         }
     }
+
+    [NETMCUCompiler.Shared.Attributes.MCUFirmwareFlasher("st-flash")]
+    public class STFlashWrapper : NETMCUCompiler.Shared.IFirmwareFlasher
+    {
+        public System.Threading.Tasks.Task<bool> FlashAsync(string firmwarePath, uint address, string portName)
+        {
+            return System.Threading.Tasks.Task.FromResult(FirmwareFlasher.Flash(firmwarePath, address, ProgrammerType.STFlash));
+        }
+    }
+
+    [NETMCUCompiler.Shared.Attributes.MCUFirmwareFlasher("openocd")]
+    public class OpenOCDWrapper : NETMCUCompiler.Shared.IFirmwareFlasher
+    {
+        public System.Threading.Tasks.Task<bool> FlashAsync(string firmwarePath, uint address, string portName)
+        {
+            return System.Threading.Tasks.Task.FromResult(FirmwareFlasher.Flash(firmwarePath, address, ProgrammerType.OpenOCD));
+        }
+    }
+
+    [NETMCUCompiler.Shared.Attributes.MCUFirmwareFlasher("cubeprogrammer")]
+    public class STM32CubeProgrammerWrapper : NETMCUCompiler.Shared.IFirmwareFlasher
+    {
+        public System.Threading.Tasks.Task<bool> FlashAsync(string firmwarePath, uint address, string portName)
+        {
+            return System.Threading.Tasks.Task.FromResult(FirmwareFlasher.Flash(firmwarePath, address, ProgrammerType.STM32CubeProgrammer));
+        }
+    }
+
+    [NETMCUCompiler.Shared.Attributes.MCUFirmwareFlasher("stlinkcli")]
+    public class STLinkCLIWrapper : NETMCUCompiler.Shared.IFirmwareFlasher
+    {
+        public System.Threading.Tasks.Task<bool> FlashAsync(string firmwarePath, uint address, string portName)
+        {
+            return System.Threading.Tasks.Task.FromResult(FirmwareFlasher.Flash(firmwarePath, address, ProgrammerType.STLinkCLI));
+        }
+    }
+
+    [NETMCUCompiler.Shared.Attributes.MCUFirmwareFlasher("dfu")]
+    public class DfuUtilWrapper : NETMCUCompiler.Shared.IFirmwareFlasher
+    {
+        public System.Threading.Tasks.Task<bool> FlashAsync(string firmwarePath, uint address, string portName)
+        {
+            return System.Threading.Tasks.Task.FromResult(FirmwareFlasher.Flash(firmwarePath, address, ProgrammerType.DfuUtil));
+        }
+    }
 }
